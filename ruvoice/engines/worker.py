@@ -166,9 +166,15 @@ class VoxCPMEngine:
         p = req.get("params") or {}
         instruction = re.sub(r"[()\r\n]", " ", str(p.get("instruct") or ""))[:400]
         text = req["text"]
-        if instruction:
+        # In continuation mode VoxCPM2 may speak the English style prefix literally.
+        # The prompt audio already supplies performance; never turn directions into spoken content.
+        if instruction and not req.get("prompt_audio"):
             text = f"({instruction}){text}"
+        prompt_audio, prompt_text = req.get("prompt_audio"), req.get("prompt_text")
+        if bool(prompt_audio) != bool(prompt_text and prompt_text.strip()):
+            raise ValueError("Continuation cloning requires both prompt audio and its transcript")
         wav = self.model.generate(text=text, reference_wav_path=req["ref_audio"],
+                                  prompt_wav_path=prompt_audio, prompt_text=prompt_text,
                                   cfg_value=float(p.get("cfg_value", 2.0)), inference_timesteps=int(p.get("steps", 10)),
                                   max_len=max(20, int(float(req.get("max_seconds", 15)) * 6.25) + 20),
                                   normalize=False, denoise=False)

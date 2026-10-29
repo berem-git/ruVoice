@@ -482,6 +482,28 @@ class DubJobs:
     def _ref_for_line(self, p: Project, line: dict, engine: str, ref: dict, style: dict) -> dict:
         """Для ru: если у оригинала выраженная эмоция и у персонажа есть реплики с такой же — образец из них
         (голос «в гневе» звучит иначе, чем спокойный)."""
+        if engine == "voxcpm":
+            from .performance import fingerprint
+            chosen = (line.get("info") or {}).get("voice_recipe") or {}
+            if chosen.get("ru") == line.get("ru") and chosen.get("source") == fingerprint(p.dir / line["orig"]):
+                paths = {}
+                for key in ("audio", "prompt_audio"):
+                    if chosen.get(key):
+                        path = (p.dir / chosen[key]).resolve()
+                        if not path.is_relative_to(p.dir.resolve()) or not path.is_file():
+                            return ref
+                        paths[key] = str(path)
+                if paths.get("audio"):
+                    return {**ref, **paths, "prompt_text": chosen.get("prompt_text"),
+                            "params": chosen.get("params") or {}, "seed": chosen.get("seed")}
+            mode = style.get("clone_mode", "reference")
+            if mode == "continuation" and line.get("en"):
+                return {**ref, "prompt_audio": str(p.dir / line["orig"]), "prompt_text": line["en"],
+                        "params": {"steps": 20, "instruct": ""}}
+            if mode == "profile_continuation" and ref.get("text"):
+                return {**ref, "prompt_audio": ref["audio"], "prompt_text": ref["text"],
+                        "params": {"steps": 20, "instruct": ""}}
+            return ref
         emo = (style or {}).get("emotion")
         if not {**DEFAULT_SETTINGS, **(p.get("settings") or {})}["emotion_refs"]:
             return ref  # один отпечаток на персонажа: голос не «плавает» от реплики к реплике
@@ -1186,7 +1208,13 @@ class DubJobs:
                     else:
                         for k in range(n_cand):
                             seed = None if not (k or take or fix) else 100003 * (take + 1) + 977 * k + (7919 if fix else 0)
-                            candidates[j] += tts.synthesize(engine, [text], [ref], [maxlen], params, seed=seed)
+                            if engine == "voxcpm":
+                                variant_params = {**params, "variant": k,
+                                    "clone_mode": ("reference", "continuation", "profile_continuation")[k % 3]}
+                                variant_ref = self._ref_for_line(p, l, engine, refs[l["char"]], variant_params)
+                                candidates[j] += tts.synthesize(engine, [text], [variant_ref], [maxlen], variant_params, seed=seed)
+                            else:
+                                candidates[j] += tts.synthesize(engine, [text], [ref], [maxlen], params, seed=seed)
             except Exception as e:
                 for l in chunk:
                     p.update_line(l["id"], status="error", error=str(e)[:300])
@@ -1226,6 +1254,10 @@ class DubJobs:
                 cons = [float(e @ centroid) for e in embs] if embs is not None else [None] * len(raw)
                 orig_emo, orig_ev = self._orig_judge(p, l) if judging else (None, None)
                 ostats = self._orig_stats(p, l) if judging else None
+                source_sims = [None] * len(raw)
+                if engine == "voxcpm" and use_judge:
+                    source_profile = judge.speaker_embed([(orig, orig_sr)])
+                    source_sims = [float(judge.speaker_embed([candidate]) @ source_profile) for candidate in raw]
                 for k, ((fitted, finfo), tmp, heard) in enumerate(zip(scored, tmps, heard_all)):
                     jr = None
                     if judging:
@@ -1239,6 +1271,12 @@ class DubJobs:
                     # оценка контролёра + сходство с «русским голосом» персонажа + чистота произношения
                     score = ((jr["score"] if jr else 0) + (30 * cons[k] if cons[k] is not None else 0)
                              - (60 * prons[k]["cer"] if prons[k] else 0))
+                    if source_sims[k] is not None:
+                        score += 30 * source_sims[k]
+                        if jr:
+                            jr['source_voice_sim'] = round(source_sims[k], 3)
+                            if jr.get('cer', 0) > .05:
+                                score -= 200  # voice identity cannot compensate for incorrect words
                     if best is None or score > best_score:
                         best, best_info, best_judge, best_k, best_score = fitted, finfo, jr or {"score": 0}, k, score
                     tmp.unlink(missing_ok=True)
@@ -1255,6 +1293,7 @@ class DubJobs:
                             "engine": engine, "trained": bool(voices.get(l["char"])), "candidates": len(scored),
                             "speech": old_info.get("speech"), "style": self._style_cache.get(l["id"]),
                             "delivery": old_info.get("delivery"), "performance": old_info.get("performance"),
+                            "voice_recipe": old_info.get("voice_recipe"),
                             "spoken": text if text != l["ru"] else None}
                 if plan:
                     new_info["fix"] = plan
@@ -2163,6 +2202,26 @@ class DubJobs:
         from . import preview
         result = preview.run(self, gid, count, engine, ids, label)
         self._finish(gid, f"Пробы готовы: {result['label']} ({len(result['rows'])})")
+
+    def _do_voice_search(self, gid: str, ids: list[str] | None = None, count: int = 2):
+        from . import voice_search
+        p = self.project(gid)
+        if not ids:
+            candidates = [l for l in p.lines() if l['en'] and l['ru'] and l['status'] != 'skipped'
+                          and 2 <= (l['duration'] or 0) <= 9]
+            candidates.sort(key=lambda l: abs((l['duration'] or 0) - 5))
+            ids, seen = [], set()
+            for line in candidates:
+                if line['char'] not in seen:
+                    ids.append(line['id'])
+                    seen.add(line['char'])
+                if len(ids) >= count:
+                    break
+        if not ids:
+            raise ValueError("Нет реплик с оригиналом и русским текстом")
+        label = 'identity_' + time.strftime('%Y%m%d_%H%M%S')
+        result = voice_search.run(gid, ids, label, jobs=self)
+        self._finish(gid, f"Подбор голоса завершён: {result['label']}")
 
     def _do_bench(self, gid: str, label: str | None = None):
         """Озвучить постоянный контрольный набор реплик текущим способом и оценить (bench.py)."""

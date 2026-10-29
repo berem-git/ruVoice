@@ -191,13 +191,13 @@ def cer(target: str, heard: str) -> float:
     return d[len(b)] / len(a)
 
 
-def speaker_embed(paths: list[str]) -> np.ndarray:
+def speaker_embed(paths: list) -> np.ndarray:
     """Эмбеддинг диктора по нескольким файлам (усреднённый, нормированный)."""
     import torch
     from .thirdparty.voice_encoder import VoiceEncoder
     wavs = []
     for p in paths:
-        w, sr = audio.read(p)
+        w, sr = p if isinstance(p, tuple) else audio.read(p)
         wavs.append(audio.resample(w, sr, 16000))
     with _lock, torch.no_grad():
         embs = _load_ve().embeds_from_wavs(wavs, sample_rate=16000, as_spk=False)

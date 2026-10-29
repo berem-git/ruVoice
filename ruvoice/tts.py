@@ -168,9 +168,12 @@ def synthesize(engine: str, texts: list[str], refs: list[dict], max_seconds: lis
                 raise ValueError("VoxCPM2 нужен чистый образец голоса персонажа")
             with tempfile.TemporaryDirectory() as td:
                 dst = Path(td) / "generated.wav"
+                clone_params = {**params, **(ref.get("params") or {})}
+                chosen_seed = (int(ref['seed']) + int(params.get('variant', 0)) * 977) if ref.get('seed') is not None else seed
                 client.get("voxcpm").request({"op": "generate", "text": accent.mark(text, "custom"),
-                    "ref_audio": ref["audio"], "out": str(dst), "params": params,
-                    "max_seconds": seconds, "seed": seed})
+                    "ref_audio": ref["audio"], "out": str(dst), "params": clone_params,
+                    "prompt_audio": ref.get("prompt_audio"), "prompt_text": ref.get("prompt_text"),
+                    "max_seconds": seconds, "seed": chosen_seed})
                 outputs.append(audio.read(dst))
         return outputs
     if engine == "ru":  # refs[i] = {"audio": образец голоса персонажа, "text": его расшифровка (для ICL)}
