@@ -12,10 +12,10 @@ const LINE_STATUS = {
 const STEP_NAMES = {
   extract: "Извлечение реплик", transcribe: "Распознавание речи", translate: "Перевод",
   generate: "Озвучка", judge: "Контролёр качества", train_voice: "Обучение голоса", train_tts: "Дообучение голоса", bench: "Контрольная сцена", export: "Экспорт озвучки", import: "Импорт озвучки", speakers: "Кто говорит", redirect: "Переозвучка по указанию", direct: "Режиссёр", events_pass: "Смех и вздохи из оригинала", screen: "Отсев неречевых реплик",
-  prepare: "Подготовка", samples: "Пробы голосов", voice_search: "Подбор похожего голоса", install: "Установка в игру", uninstall: "Удаление озвучки",
+  prepare: "Подготовка", samples: "Пробы голосов", install: "Установка в игру", uninstall: "Удаление озвучки",
 };
-const QUALITY = { fast: "Быстро — 1 вариант на реплику", normal: "Обычно — 3 варианта, контролёр выбирает лучший",
-  thorough: "Тщательно — 5 вариантов" };
+const QUALITY = { fast: "Быстро — 1 вариант на реплику", normal: "Обычно — 2 варианта, контролёр выбирает лучший",
+  thorough: "Тщательно — 4 варианта (в 3–4 раза дольше)" };
 const ENGINE_NAMES = { voxcpm: "VoxCPM2 (голос и подача)", ru: "Qwen3-TTS (русское дообучение)", custom: "Qwen3-TTS CustomVoice" };
 
 const studio = { gid: null, info: null, view: "flow", timer: null, filters: { status: "", char: "", q: "", offset: 0 } };
@@ -533,9 +533,6 @@ function settingsPanel(info) {
     h("div", { class: "settings" },
       h("h3", {}, "Голос и исходное исполнение"),
       h("button", { class: "btn primary", onclick: () => run("/preview", { count: 2 }) }, "Создать две пробы без установки"),
-      h("button", { class: "btn", disabled: Boolean(info.status?.running || info.status?.queued?.length),
-        onclick: () => run("/voice-search", {}) }, "Подобрать более похожие голоса"),
-      h("p", { class: "muted small" }, "Подбор сравнивает несколько способов клонирования и проверяет русский текст. Он занимает несколько минут; результаты остаются отдельными пробами."),
       (info.previews || []).slice(-3).reverse().map(p => h("p", {}, h("a", {
         href: `/api/projects/${encodeURIComponent(studio.gid)}/preview?label=${encodeURIComponent(p.label)}`,
         target: "_blank", rel: "noopener" }, `Послушать ${p.count} пробы · ${p.engine} · ${p.label}`))),

@@ -303,19 +303,6 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
         dub.enqueue(gid, "preview", count=count, engine=engine)
         return dub.status(gid)
 
-    @r.post("/projects/{gid:path}/voice-search")
-    def search_voice(gid: str, body: dict | None = None):
-        p = _project(gid)
-        if "voxcpm" not in engines.available_tts():
-            raise HTTPException(400, "Для подбора голоса нужен VoxCPM2")
-        body = body or {}
-        ids = body.get("ids")
-        if ids is not None and (not isinstance(ids, list) or not 1 <= len(ids) <= 2
-                                or not all(isinstance(i, str) and p.line(i) for i in ids)):
-            raise HTTPException(400, "Укажите одну или две существующие реплики")
-        dub.enqueue(gid, "voice_search", ids=ids, count=2)
-        return dub.status(gid)
-
     @r.get("/projects/{gid:path}/lines")
     def lines(gid: str, status: str | None = None, char: str | None = None, q: str | None = None,
               limit: int = 100, offset: int = 0, rework: bool = False):
