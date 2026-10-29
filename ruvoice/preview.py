@@ -15,7 +15,7 @@ from . import audio
 
 def run(jobs, gid: str, count: int = 2, engine: str | None = None,
         ids: list[str] | None = None, label: str | None = None) -> dict:
-    from . import asr, judge, tts
+    from . import asr, judge, tts, pron
     from .engines import TTS_ENGINES
     p = jobs.project(gid)
     engine = engine or jobs._engine_for(gid)
@@ -66,6 +66,11 @@ def run(jobs, gid: str, count: int = 2, engine: str | None = None,
     for r, text in zip(rows, heard):
         r.update(heard=text, cer=round(judge.cer(r["ru"], text), 3))
     asr.unload()
+    if pron.ready():
+        pronunciation = pron.check([str(p.dir / r['generated']) for r in rows], [r['ru'] for r in rows])
+        for r, result in zip(rows, pronunciation):
+            r.update(pron_cer=result['cer'], pron_heard=result['heard'], pron_words=result['words'])
+        pron.unload()
     manifest = {"version": 1, "label": label, "game_id": gid, "engine": engine, "created_at": time.time(),
                 "capabilities": TTS_ENGINES[engine].get("capabilities", {}), "installed": False, "rows": rows}
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), "utf-8")
@@ -86,10 +91,13 @@ def _html(out: Path, manifest: dict):
             url = f"/api/projects/{gid}/audio?" + urlencode({"kind": "file", "file": path})
             return f'<audio controls preload="none" src="{e(rel)}" data-http="{e(url)}"></audio>'
         warnings = r["performance"].get("warnings", [])
+        pronunciation = (f'Проверка произношения CTC: {r["pron_cer"]:.1%} · {e(r["pron_heard"])}'
+                         if 'pron_cer' in r else 'Произношение отдельно не проверялось')
         body.append(f'<article><h2>{e(r["speaker"])}</h2><p>{e(r["ru"])}</p><p class="muted">{e(r["en"])}</p>'
                     f'<div class="pair"><div>Оригинал<br>{player(r["original"])}</div>'
                     f'<div>Русский<br>{player(r["generated"])}</div></div>'
                     f'<p>CER: {r["cer"]:.1%} · Похожесть: {r["voice_similarity"]}</p>'
+                    f'<p>{pronunciation}</p><p class="muted">Правильные слова не гарантируют отсутствие акцента — прослушайте запись.</p>'
                     f'<p class="muted">{e("; ".join(warnings))}</p></article>')
     document = '<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width">' \
         '<title>RuVoice — пробы озвучки</title><style>body{background:#111827;color:#e5e7eb;font:16px system-ui;' \

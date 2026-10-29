@@ -154,7 +154,11 @@ def _load_emotion():
 def _load_events():
     global _events
     if _events is None:
-        _events = _pipeline("audio-classification", EVENTS_MODEL)
+        from . import models
+        local = models.path('judge-events')
+        if not local:
+            raise RuntimeError('Модель неречевых звуков не скачана')
+        _events = _pipeline("audio-classification", str(local))
     return _events
 
 

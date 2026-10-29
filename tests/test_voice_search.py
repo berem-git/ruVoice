@@ -9,7 +9,7 @@ from ruvoice.voice_search import select
 
 class CandidateSelectionTests(unittest.TestCase):
     def candidate(self, name, similarity=.8, **changes):
-        row = dict(name=name, cer=0., duration_ratio=1., clipped_fraction=0.,
+        row = dict(name=name, cer=0., pron_cer=0., duration_ratio=1., clipped_fraction=0.,
                    ve_source=similarity, ve_holdout=similarity, ecapa_source=similarity)
         row.update(changes)
         return row
@@ -17,6 +17,13 @@ class CandidateSelectionTests(unittest.TestCase):
     def test_wrong_words_cannot_win_with_high_identity(self):
         good = self.candidate('good')
         self.assertIs(select([good, self.candidate('wrong', .99, cer=.4)]), good)
+
+    def test_accented_candidate_cannot_win_with_correct_whisper_words(self):
+        good = self.candidate('good')
+        self.assertIs(select([good, self.candidate('accented', .99, pron_cer=.091)]), good)
+
+    def test_user_rejection_cannot_be_overridden_by_similarity(self):
+        self.assertIsNone(select([self.candidate('rejected', .99, rejected=True)]))
 
     def test_clipping_and_runaway_audio_cannot_win(self):
         good = self.candidate('good')
@@ -76,13 +83,13 @@ class SavedRecipeTests(unittest.TestCase):
             (root / 'source.wav').write_bytes(b'original')
             (root / 'reference.wav').write_bytes(b'reference')
             chosen = dict(audio='reference.wav', ru='Привет.', source=fingerprint(root / 'source.wav'),
-                          prompt_audio='source.wav', prompt_text='Hello.', seed=42)
+                          prompt_audio='source.wav', prompt_text='Привет.', seed=42)
             line = dict(orig='source.wav', ru='Привет.', info={'voice_recipe': chosen})
-            project = types.SimpleNamespace(dir=root)
+            project = types.SimpleNamespace(dir=root, get=lambda key: {})
             jobs = object.__new__(DubJobs)
             fallback = {'audio': 'default.wav'}
             result = jobs._ref_for_line(project, line, 'voxcpm', fallback, {})
-            self.assertEqual(result['prompt_text'], 'Hello.')
+            self.assertEqual(result['prompt_text'], 'Привет.')
             self.assertEqual(result['seed'], 42)
             line['ru'] = 'Другой текст.'
             self.assertIs(jobs._ref_for_line(project, line, 'voxcpm', fallback, {}), fallback)
@@ -99,8 +106,22 @@ class SavedRecipeTests(unittest.TestCase):
             line = dict(orig='source.wav', ru='Привет.', info={'voice_recipe': dict(
                 audio='../outside.wav', ru='Привет.', source=fingerprint(root / 'source.wav'))})
             fallback = {'audio': 'default.wav'}
-            self.assertIs(object.__new__(DubJobs)._ref_for_line(types.SimpleNamespace(dir=root),
+            self.assertIs(object.__new__(DubJobs)._ref_for_line(types.SimpleNamespace(dir=root, get=lambda key: {}),
                           line, 'voxcpm', fallback, {}), fallback)
+
+    def test_english_continuation_is_not_applied_automatically(self):
+        from ruvoice.dub import DubJobs
+        from ruvoice.performance import fingerprint
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'source.wav').write_bytes(b'original')
+            line = dict(orig='source.wav', ru='Привет.', en='Hello.', info={'voice_recipe': dict(
+                audio='source.wav', prompt_audio='source.wav', prompt_text='Hello.',
+                ru='Привет.', source=fingerprint(root / 'source.wav'))})
+            fallback = {'audio': 'default.wav'}
+            project = types.SimpleNamespace(dir=root, get=lambda key: {})
+            jobs = object.__new__(DubJobs)
+            self.assertIs(jobs._ref_for_line(project, line, 'voxcpm', fallback, {'clone_mode': 'continuation'}), fallback)
 
 
 if __name__ == '__main__':

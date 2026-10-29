@@ -30,6 +30,7 @@ from .project import Project
 
 DEFAULT_SETTINGS = {
     "speech_engine": "auto",    # capability-based backend selection; no game-dependent branches
+    "allow_cross_language_prompt": False,  # English continuation can copy foreign pronunciation into Russian
     "preserve_performance": True,
     "effects_mode": "unknown",  # unknown / engine / dry / baked; explicit acoustic routing
     "text_source": "official",   # official — официальные русские субтитры; llm — перевести всё нейросетью
@@ -74,7 +75,7 @@ FT_OVERHEAD_SEC = 120            # подбор записей, коды реч�
 FT_DISK_GB = {"full": 4.0, "lora": 0.05}
 CANDIDATES = {"fast": 1, "normal": 3, "thorough": 5}
 FIX_EXTRA = 3                    # сколько вариантов добавлять при переозвучке проблемной реплики
-VOICE_VARIANTS = ["voxcpm", "ru", "custom"]
+VOICE_VARIANTS = ["ru", "voxcpm", "custom"]  # Russian-trained pronunciation before cross-language timbre cloning
 # Эмоция оригинала → инструкция для CustomVoice (модель понимает естественный язык)
 EMOTION_INSTRUCT = {
     "angry": "Speak angrily and sharply, with force and tension in the voice.",
@@ -484,8 +485,11 @@ class DubJobs:
         (голос «в гневе» звучит иначе, чем спокойный)."""
         if engine == "voxcpm":
             from .performance import fingerprint
+            allow_context = {**DEFAULT_SETTINGS, **(p.get('settings') or {})}['allow_cross_language_prompt']
             chosen = (line.get("info") or {}).get("voice_recipe") or {}
-            if chosen.get("ru") == line.get("ru") and chosen.get("source") == fingerprint(p.dir / line["orig"]):
+            foreign_prompt = bool(re.search(r'[A-Za-z]', chosen.get('prompt_text') or ''))
+            if (chosen.get("ru") == line.get("ru") and chosen.get("source") == fingerprint(p.dir / line["orig"])
+                    and (allow_context or not foreign_prompt)):
                 paths = {}
                 for key in ("audio", "prompt_audio"):
                     if chosen.get(key):
@@ -497,10 +501,10 @@ class DubJobs:
                     return {**ref, **paths, "prompt_text": chosen.get("prompt_text"),
                             "params": chosen.get("params") or {}, "seed": chosen.get("seed")}
             mode = style.get("clone_mode", "reference")
-            if mode == "continuation" and line.get("en"):
+            if mode == "continuation" and line.get("en") and allow_context:
                 return {**ref, "prompt_audio": str(p.dir / line["orig"]), "prompt_text": line["en"],
                         "params": {"steps": 20, "instruct": ""}}
-            if mode == "profile_continuation" and ref.get("text"):
+            if mode == "profile_continuation" and ref.get("text") and allow_context:
                 return {**ref, "prompt_audio": ref["audio"], "prompt_text": ref["text"],
                         "params": {"steps": 20, "instruct": ""}}
             return ref
