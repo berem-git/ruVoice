@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ruvoice-server",
+      "runtimeExecutable": "runtime/python/python.exe",
+      "runtimeArgs": ["-m", "ruvoice.main", "--server", "--port", "8765"],
+      "port": 8765
+    }
+  ]
+}

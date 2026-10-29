@@ -1,0 +1,16 @@
+# Только исходники программы. Среда, модели, данные, кэш и бинарные инструменты не хранятся в git.
+runtime/
+models/
+data/
+cache/
+checkpoints/
+tools/*
+!tools/env.ps1
+!tools/qwen3-tts-finetune/
+tools/qwen3-tts-finetune/**/__pycache__/
+RuVoice.exe
+__pycache__/
+*.pyc
+*.log
+*.wav
+*.tmp
