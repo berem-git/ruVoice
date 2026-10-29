@@ -16,18 +16,17 @@ import numpy as np
 
 RECIPES = [
     {"name": "source_reference", "reference": "source", "cfg_value": 2., "steps": 20},
-    {"name": "source_continuation", "reference": "source", "continuation": True, "cfg_value": 2., "steps": 20},
-    {"name": "source_continuation_strong", "reference": "source", "continuation": True, "cfg_value": 2.8, "steps": 24},
-    {"name": "source_continuation_seed2", "reference": "source", "continuation": True, "cfg_value": 2., "steps": 20, "seed_offset": 17},
-    {"name": "source_continuation_style", "reference": "source", "continuation": True, "style": True, "cfg_value": 2., "steps": 20},
-    {"name": "profile_continuation", "reference": "profile", "continuation": True, "cfg_value": 2., "steps": 20},
-    {"name": "other_continuation", "reference": "other", "continuation": True, "prompt_other": True, "cfg_value": 2., "steps": 20},
+    {"name": "profile_reference", "reference": "profile", "style": True, "cfg_value": 2., "steps": 10},
+    {"name": "profile_reference_seed2", "reference": "profile", "style": True, "cfg_value": 2., "steps": 10, "seed_offset": 17},
+    {"name": "profile_reference_plain", "reference": "profile", "cfg_value": 2., "steps": 20},
+    {"name": "profile_reference_soft", "reference": "profile", "cfg_value": 1.5, "steps": 20},
 ]
 
 
 def select(candidates: list[dict]) -> dict | None:
     """Reject wrong words, missing measurements, clipping and runaway generation before ranking."""
     valid = [c for c in candidates if c.get("cer", 1.) <= .05
+             and c.get('pron_cer', 1.) <= .08 and not c.get('rejected')
              and .45 <= c.get("duration_ratio", 0.) <= 1.8
              and c.get("clipped_fraction", 1.) < .01
              and all(np.isfinite(c.get(k, float("nan"))) for k in ("ve_source", "ve_holdout", "ecapa_source"))]
@@ -45,10 +44,11 @@ def write_report(out: Path, manifest: dict):
         rows.append(f'<section><h2>{e(item["speaker"])} · {e(item["ru"])}</h2><p>Оригинал</p>{player(item["original"])}')
         for candidate in item["candidates"]:
             best = " · выбран по проверкам" if candidate["name"] == item.get("selected") else ""
+            pronunciation = (f' · CTC {candidate["pron_cer"]:.1%}' if 'pron_cer' in candidate else '')
             rows.append(f'<article><h3>{e(candidate["name"])}{best}</h3>{player(candidate["file"])}'
                         f'<p>CER {candidate["cer"]:.1%} · сходство с репликой {candidate["ve_source"]:.3f}'
                         f' · с другими записями {candidate["ve_holdout"]:.3f}'
-                        f' · ECAPA {candidate["ecapa_source"]:.3f}</p>'
+                        f' · ECAPA {candidate["ecapa_source"]:.3f}{pronunciation}</p>'
                         f'<p>{e(candidate["heard"])}</p></article>')
         rows.append('</section>')
     (out / "index.html").write_text('<!doctype html><html lang="ru"><meta charset="utf-8">'
@@ -63,7 +63,7 @@ def write_report(out: Path, manifest: dict):
 def run(gid: str, ids: list[str], label: str, baseline: str | None = None, recipes=None, jobs=None):
     from . import accel
     accel.activate()
-    from . import asr, audio, judge, tts
+    from . import asr, audio, judge, tts, pron
     from .dub import DubJobs
     from .engines import client
     from .library import Library
@@ -76,6 +76,13 @@ def run(gid: str, ids: list[str], label: str, baseline: str | None = None, recip
     if owns_jobs:
         jobs.state[gid] = {"task": "voice_search", "message": "", "done": 0, "total": 0, "error": None, "queued": []}
     p = jobs.project(gid)
+    if not pron.ready():
+        raise RuntimeError('Для подбора голоса нужна модель проверки русского произношения')
+    recipes = recipes or RECIPES
+    if not jobs.settings(gid).get('allow_cross_language_prompt', False):
+        recipes = [r for r in recipes if not r.get('continuation')]
+    if not recipes:
+        raise ValueError('Английский речевой контекст отключён: он может переносить акцент')
     out = p.dir / "previews" / label
     out.mkdir(parents=True, exist_ok=False)
     previous = {}
@@ -187,6 +194,12 @@ def run(gid: str, ids: list[str], label: str, baseline: str | None = None, recip
                 c.update(heard=text, cer=round(judge.cer(item['ru'], text), 4))
                 print(item['speaker'], c['name'], c['cer'], c['ve_source'], c['ve_holdout'], c['ecapa_source'], flush=True)
             asr.unload()
+            pronunciation = pron.check(paths, [item['ru']] * len(paths))
+            pron.unload()
+            rejected = ((p.line(item['id']).get('info') or {}).get('voice_feedback') or {}).get('rejected_output')
+            for c, result in zip(item['candidates'], pronunciation):
+                c.update(pron_cer=result['cer'], pron_heard=result['heard'], pron_words=result['words'],
+                         rejected=bool(rejected and c['file'] == rejected))
             selected = select(item['candidates'])
             item['selected'] = selected['name'] if selected else None
             if selected and selected.get('reproduce'):
@@ -206,6 +219,7 @@ def run(gid: str, ids: list[str], label: str, baseline: str | None = None, recip
         client.stop('voxcpm')
         asr.unload()
         judge.unload()
+        pron.unload()
         if owns_jobs:
             p.close()
 
