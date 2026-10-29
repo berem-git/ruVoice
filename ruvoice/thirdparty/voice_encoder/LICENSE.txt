@@ -1,0 +1,1 @@
+﻿VoiceEncoder: из проекта Chatterbox (Resemble AI), лицензия MIT. Веса — models\chatterbox\ve.pt.

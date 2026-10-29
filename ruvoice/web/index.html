@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RuVoice</title>
+  <link rel="icon" href="icon.png">
+  <link rel="stylesheet" href="style.css?v=44">
+  <link rel="stylesheet" href="studio.css?v=44">
+</head>
+<body>
+  <header class="topbar">
+    <div class="logo">Ru<span>Voice</span></div>
+    <input id="search" class="search" type="search" placeholder="Поиск игры…">
+    <div class="actions">
+      <button id="btn-add" class="btn primary">＋ Добавить игру</button>
+      <button id="btn-scan" class="btn" title="Найти новые игры в лаунчерах и папках">⟳ Сканировать</button>
+      <button id="btn-import" class="btn" title="Загрузить файл .ruvoice с готовой озвучкой">📥 Импорт озвучки</button>
+      <button id="btn-menu" class="btn icon" title="Ещё">⋯</button>
+      <div id="menu" class="menu hidden">
+        <button data-act="rescan">Переанализировать все игры</button>
+        <button data-act="unhide">Вернуть скрытые игры</button>
+        <button data-act="dirs">Папки с играми…</button>
+        <button data-act="system">Система и ускорение…</button>
+      </div>
+    </div>
+  </header>
+
+  <nav class="filters" id="filters">
+    <button class="chip active" data-filter="all">Все <b></b></button>
+    <button class="chip" data-filter="need">Без русской озвучки <b></b></button>
+    <button class="chip" data-filter="ru_text">Только субтитры <b></b></button>
+    <button class="chip" data-filter="ru_audio">С русской озвучкой <b></b></button>
+    <button class="chip" data-filter="manual">Добавлены вручную <b></b></button>
+    <div class="spacer"></div>
+    <div id="status" class="status hidden"><span class="spinner"></span><span id="status-text"></span></div>
+  </nav>
+
+  <main>
+    <div id="banner" class="banner hidden"></div>
+    <div id="grid" class="grid"></div>
+    <div id="empty" class="empty hidden">
+      <h2>Игр пока нет</h2>
+      <p>Нажмите «Сканировать», чтобы найти игры в Steam, Epic, GOG и Ubisoft,<br>
+        или добавьте игру вручную — подойдёт любая папка, даже самодельная или неофициальная игра.</p>
+      <button class="btn primary" onclick="openAdd()">＋ Добавить игру</button>
+    </div>
+  </main>
+
+  <aside id="drawer" class="drawer hidden"></aside>
+  <div id="backdrop" class="backdrop hidden"></div>
+
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <div class="modal-head">
+        <h3>Добавить игры вручную</h3>
+        <button class="btn icon" data-close>✕</button>
+      </div>
+      <div class="tabs">
+        <button class="tab active" data-tab="single">Одна игра</button>
+        <button class="tab" data-tab="folder">Папка с играми</button>
+      </div>
+
+      <div class="tab-body" data-body="single">
+        <p class="hint">Выберите папку, в которой лежит игра (где её .exe). Подойдёт любая игра:
+          из другого магазина, неофициальная или сделанная самостоятельно.</p>
+        <label>Папка игры</label>
+        <div class="row">
+          <input id="add-path" placeholder="Например: D:\Games\MyGame">
+          <button class="btn" data-pick="add-path">Обзор…</button>
+        </div>
+        <label>Название <span class="muted">(необязательно — по умолчанию имя папки)</span></label>
+        <input id="add-name" placeholder="Как показывать игру в списке">
+        <div class="error" id="add-error"></div>
+        <div class="modal-foot"><button class="btn primary" id="add-submit">Добавить</button></div>
+      </div>
+
+      <div class="tab-body hidden" data-body="folder">
+        <p class="hint">Если у вас есть папка, где лежит много игр (например <code>D:\Games</code>), добавьте её
+          целиком: каждая подпапка с .exe станет отдельной игрой. Новые игры в ней найдутся при сканировании.</p>
+        <label>Папка с играми</label>
+        <div class="row">
+          <input id="dir-path" placeholder="Например: D:\Games">
+          <button class="btn" data-pick="dir-path">Обзор…</button>
+        </div>
+        <div class="error" id="dir-error"></div>
+        <div class="modal-foot"><button class="btn primary" id="dir-submit">Добавить папку</button></div>
+        <label>Уже добавленные папки</label>
+        <ul id="dir-list" class="dir-list"></ul>
+      </div>
+    </div>
+  </div>
+
+  <section id="studio" class="studio hidden"></section>
+
+  <div id="system-modal" class="modal hidden">
+    <div class="modal-box wide">
+      <div class="modal-head"><h3>Система и ускорение</h3>
+        <button class="btn icon" onclick="document.getElementById('system-modal').classList.add('hidden')">✕</button></div>
+      <div id="system-body"></div>
+    </div>
+  </div>
+
+  <div id="lang-modal" class="modal hidden">
+    <div class="modal-box wide"><div id="lang-body"></div></div>
+  </div>
+
+  <script src="app.js?v=44"></script>
+  <script src="system.js?v=44"></script>
+  <script src="studio.js?v=44"></script>
+</body>
+</html>
