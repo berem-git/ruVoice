@@ -154,11 +154,7 @@ def _load_emotion():
 def _load_events():
     global _events
     if _events is None:
-        from . import models
-        local = models.path('judge-events')
-        if not local:
-            raise RuntimeError('Модель неречевых звуков не скачана')
-        _events = _pipeline("audio-classification", str(local))
+        _events = _pipeline("audio-classification", EVENTS_MODEL)
     return _events
 
 
@@ -195,13 +191,13 @@ def cer(target: str, heard: str) -> float:
     return d[len(b)] / len(a)
 
 
-def speaker_embed(paths: list) -> np.ndarray:
+def speaker_embed(paths: list[str]) -> np.ndarray:
     """Эмбеддинг диктора по нескольким файлам (усреднённый, нормированный)."""
     import torch
     from .thirdparty.voice_encoder import VoiceEncoder
     wavs = []
     for p in paths:
-        w, sr = p if isinstance(p, tuple) else audio.read(p)
+        w, sr = audio.read(p)
         wavs.append(audio.resample(w, sr, 16000))
     with _lock, torch.no_grad():
         embs = _load_ve().embeds_from_wavs(wavs, sample_rate=16000, as_spk=False)
