@@ -23,7 +23,7 @@ def archives(root: Path):
             if seen > 100_000:
                 return
             p = Path(d) / name
-            if p.suffix.lower() in {".zip", ".dat", ".bin", ".pak"} and not p.is_symlink():
+            if p.suffix.lower() in {".zip", ".dat", ".bin", ".pak", ".pk3", ".pk4", ".iwd", ".love", ".nw"} and not p.is_symlink():
                 try:
                     with p.open("rb") as f:
                         if f.read(4) == b"PK\x03\x04":

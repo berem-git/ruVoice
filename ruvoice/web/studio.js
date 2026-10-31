@@ -190,7 +190,7 @@ function renderFlow(body) {
     body.replaceChildren(h("div", { class: "callout bad" },
       h("p", {}, h("b", {}, "Эту игру пока нельзя озвучить."), " Отдельных звуковых файлов в её папке нет — звук упакован в архивы движка",
         what ? ` (${what})` : "", ", а такой формат программа пока не разбирает."),
-      h("p", { class: "muted" }, "Сейчас поддерживаются: любые игры со звуком Wwise или FMOD в папке игры (.pck, .bnk, .wem, .bank, .fsb — движок не важен), игры со звуком в отдельных файлах (.wav, .ogg, .mp3), а из архивов движков — Unreal Engine 4/5 (.pak/.utoc), RE Engine от Capcom (re_chunk_000.pak), Source и FromSoftware.")));
+      h("p", { class: "muted" }, "Доступны адаптеры Wwise и FMOD, отдельных звуковых файлов, обычных ZIP/PK3/PK4/IWD/LÖVE, открытых Godot PCK v1/v2 и Ren’Py RPA v2/v3, а также Unreal, RE Engine, Source и FromSoftware. Поддержка зависит от содержимого и версии конкретных архивов; определение движка само по себе не гарантирует извлечение и установку.")));
     return;
   }
   const s = info.stats || { total: 0, by_status: {}, rework: 0 }, by = s.by_status || {};

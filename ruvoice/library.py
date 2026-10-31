@@ -154,6 +154,8 @@ class Library:
 def game_view(lib: Library, g: dict) -> dict:
     """Сводка для интерфейса: статус русского языка и таблица языков."""
     a = g.get("analysis") or {}
+    from .engine_catalog import capability
+    adapter_id = _dub_support(g) if a else None
     langs: dict[str, dict] = {}
 
     def row(code):
@@ -207,7 +209,10 @@ def game_view(lib: Library, g: dict) -> dict:
         "size": a.get("size"), "files": a.get("files"), "exes": a.get("exes", []),
         "truncated": a.get("truncated", False), "analyzed": bool(a),
         "steam_language": g.get("steam_language"),
-        "dub_support": _dub_support(g) if a else None,
+        "dub_support": adapter_id,
+        'dub_capability': capability(a, adapter_id),
+        'engine_candidates': a.get('engine_candidates', []),
+        'formats': a.get('formats', {}),
         "dub_note": _dub_note(g) if a else None,
         "aes_key": g.get("aes_key") or "",
         "ru_installed": _ru_installed(g["id"]),
