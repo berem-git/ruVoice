@@ -5,15 +5,16 @@ import time
 from collections import Counter
 
 from .languages import code_from_component, code_from_dirname, code_from_filename
+from .engine_catalog import PROBE_EXT, signature, candidates
 
 AUDIO_EXT = {".wem", ".bnk", ".bank", ".fsb", ".ogg", ".wav", ".mp3", ".opus", ".flac", ".acb", ".awb",
              ".xwb", ".xsb", ".wma", ".m4a", ".aac", ".snd", ".hca", ".adx"}
 VIDEO_EXT = {".bik", ".bk2", ".usm", ".mp4", ".webm", ".wmv", ".avi", ".mkv", ".ogv"}
 TEXT_EXT = {".locres", ".json", ".csv", ".txt", ".xml", ".po", ".mo", ".loc", ".strings", ".tsv",
-            ".yaml", ".yml", ".lang", ".tab", ".srt", ".ass", ".rpy", ".rpyc"}
+            ".yaml", ".yml", ".lang", ".tab", ".srt", ".vtt", ".ass", ".ssa", ".rpy", ".rpyc"}
 # Пакеты, у которых язык может быть только в имени файла
 PACKAGE_EXT = {".pak", ".utoc", ".ucas", ".pck", ".cpk", ".assets", ".bundle", ".vpk", ".ba2", ".bsa",
-               ".bin", ".dat", ".arc", ".archive"}
+               ".bin", ".dat", ".arc", ".archive", ".rpa", ".pk3", ".pk4", ".iwd", ".love", ".rpf", ".mpq", ".forge", ".rpkg"}
 LANG_FILE_EXT = AUDIO_EXT | VIDEO_EXT | TEXT_EXT | PACKAGE_EXT
 LOOSE_AUDIO_EXT = {".wav", ".ogg", ".mp3", ".flac", ".opus", ".wem"}
 
@@ -91,7 +92,7 @@ def _detect_engine(names: set[str], exts: Counter, root_exe_stems: list[str]) ->
         return "Source 2"
     if has("gameinfo.txt") and exts[".vpk"]:
         return "Source"
-    if any(f"{s}.pck" in names for s in root_exe_stems) or has("data.pck"):
+    if has('project.godot'):
         return "Godot"
     if has("re_chunk_000.pak"):
         return "RE Engine"
@@ -135,6 +136,9 @@ def analyze(root: str, max_files: int = 400_000) -> dict:
     names: set[str] = set()
     exes: list[tuple[int, str]] = []
     langs: dict[str, dict[str, int]] = {}
+    evidence: dict[str, list[str]] = {}
+    format_warnings = []
+    probes = 0
 
     stack: list[tuple[str, tuple[str, ...]]] = [(root, ())]
     while stack:
@@ -166,6 +170,34 @@ def analyze(root: str, max_files: int = 400_000) -> dict:
                 low = e.name.lower()
                 stem, ext = os.path.splitext(low)
                 exts[ext] += 1
+                probe_exe = ext == '.exe' and len(rel) <= 3 and not stem.startswith(JUNK_EXE)
+                if probes < 4096 and (ext in PROBE_EXT - {'.wav', '.wem', '.ogg', '.flac'} or probe_exe):
+                    probes += 1
+                    try:
+                        with open(e.path, 'rb') as stream:
+                            header = stream.read(64)
+                            kind = signature(header)
+                            if probe_exe and size >= 32 and kind is None:
+                                stream.seek(size - 12)
+                                footer = stream.read(12)
+                                if footer[8:] == b'GDPC':
+                                    offset = size - 12 - int.from_bytes(footer[:8], 'little')
+                                    if 0 <= offset < size - 12:
+                                        stream.seek(offset)
+                                        if stream.read(4) == b'GDPC':
+                                            kind = 'godot-embedded-pck'
+                        if kind:
+                            examples = evidence.setdefault(kind, [])
+                            if len(examples) < 8:
+                                examples.append('/'.join(rel + (e.name,)))
+                            if kind == 'godot-pck' and len(format_warnings) < 8:
+                                version = int.from_bytes(header[4:8], 'little')
+                                if version not in (1, 2):
+                                    format_warnings.append(f'{e.name}: Godot PCK v{version} требует отдельного читателя.')
+                                elif version == 2 and int.from_bytes(header[20:24], 'little') & 1:
+                                    format_warnings.append(f'{e.name}: каталог Godot PCK зашифрован.')
+                    except OSError:
+                        pass
                 if ext in LOOSE_AUDIO_EXT and size > 8_000:
                     loose_audio += 1
                 if len(rel) < 5:
@@ -185,10 +217,20 @@ def analyze(root: str, max_files: int = 400_000) -> dict:
 
     exes.sort(reverse=True)
     root_exe_stems = [os.path.splitext(p)[0].lower() for _, p in exes if "\\" not in p]
+    engine_candidates = candidates(names, exts, evidence)
+    middleware = _detect_middleware(names, exts)
+    for label, kinds in [('Wwise', {'wwise-package', 'wwise-bank'}), ('FMOD', {'fmod-fsb5', 'fmod-bank'})]:
+        if kinds & evidence.keys() and label not in middleware:
+            middleware.append(label)
     return {
+        'analysis_version': 2,
+        'engine_candidates': engine_candidates,
+        'formats': evidence,
+        'format_warnings': format_warnings,
+        'signature_probes': probes,
         "loose_audio": loose_audio,
-        "engine": _detect_engine(names, exts, root_exe_stems),
-        "middleware": _detect_middleware(names, exts),
+        "engine": engine_candidates[0]['name'] if engine_candidates else _detect_engine(names, exts, root_exe_stems),
+        "middleware": middleware,
         "size": total_size,
         "files": file_count,
         "truncated": truncated,

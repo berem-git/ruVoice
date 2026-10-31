@@ -31,10 +31,11 @@ def _all():
     from .unreal import UnrealAdapter
     from .wwise_loose import WwiseLooseAdapter
     from .zip_audio import ZipAudioAdapter
+    from .packed_audio import GodotPCKAdapter, RenpyRPAAdapter
     # Сначала читатели структурированных форматов (знают связи текста и звука), затем общие по звуковой
     # системе (Wwise, FMOD в папке игры — любой движок), последним — отдельные звуковые файлы
     return list(_registered) + [SourceAdapter, FromsoftAdapter, REEngineAdapter, UnrealAdapter,
-            WwiseLooseAdapter, FmodLooseAdapter, ZipAudioAdapter, LooseAdapter]
+            WwiseLooseAdapter, FmodLooseAdapter, GodotPCKAdapter, RenpyRPAAdapter, ZipAudioAdapter, LooseAdapter]
 
 
 def for_game(game: dict):

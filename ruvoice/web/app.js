@@ -118,7 +118,8 @@ function render() {
         badge(g.status),
         dubLine(dubs[g.id]) ||
         (g.analyzed && !["ru_audio", "ru_audio_store"].includes(g.status) &&
-          h("div", { class: `support ${g.dub_support ? "yes" : "no"}` }, g.dub_support ? "🎙 можно озвучить" : "🎙 пока не поддерживается"))));
+          h("div", { class: `support ${g.dub_support ? "yes" : "no"}` },
+            g.dub_capability?.status === "partial" ? "🎙 доступна часть звука" : g.dub_support ? "🎙 можно озвучить найденный звук" : "🎙 нужен адаптер ресурсов"))));
   }));
   document.getElementById("empty").classList.toggle("hidden", games.some(g => !g.hidden));
   if (openId) renderDrawer();
@@ -237,7 +238,8 @@ function renderDrawer() {
           { source: "поддерживается (Source)", loose: "поддерживается (отдельные файлы)", fromsoft: "поддерживается (FromSoftware)",
             unreal: g.dub_note && g.dub_note !== "поддерживается" ? `Unreal Engine: ${g.dub_note}` : "поддерживается (Unreal Engine)",
             wwise: "поддерживается (Wwise)", fmod: "поддерживается (FMOD)", reengine: "поддерживается (RE Engine)",
-            "zip-audio": "поддерживается (ZIP с аудио)" }[g.dub_support]
+            "zip-audio": "поддерживается (ZIP с аудио)", "godot-pck": "поддерживается (открытый Godot PCK)",
+            "renpy-rpa": "поддерживается (Ren’Py RPA)" }[g.dub_support]
           || "пока не поддерживается")),
         g.size != null && h("span", { class: "tag" }, "Размер: ", h("b", {}, fmtSize(g.size))),
         g.files != null && h("span", { class: "tag" }, "Файлов: ", h("b", {}, g.files.toLocaleString("ru"))),
@@ -246,6 +248,10 @@ function renderDrawer() {
       h("div", { class: `callout ${calloutClass}` }, st.hint),
       g.missing && h("div", { class: "callout bad" }, "Папка игры не найдена. Возможно, игру перенесли или удалили."),
       g.truncated && h("div", { class: "callout warn" }, "В папке очень много файлов — проанализирована только часть."),
+      g.analyzed && g.dub_capability && h("div", { class: `callout ${g.dub_capability.status === "available" ? "good" : "warn"}` },
+        g.dub_capability.note, (g.dub_capability.blockers || []).filter(note => note !== g.dub_capability.note).map(note => h("p", {}, note))),
+      (g.engine_candidates || []).length > 0 && h("details", {}, h("summary", {}, "Как определён движок"),
+        g.engine_candidates.map(candidate => h("p", { class: "muted small" }, `${candidate.name}: ${candidate.evidence.join(", ")}`))),
       (g.engine || "").startsWith("Unreal") && aesKeyRow(g),
       h("div", { class: "drawer-actions" },
         g.analyzed && h("button", { class: "btn primary", onclick: () => openStudio(g.id) },

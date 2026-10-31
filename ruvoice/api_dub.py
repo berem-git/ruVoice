@@ -284,6 +284,13 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
         result["adapter"] = adapter.id if adapter else None
         return result
 
+    @r.get('/support')
+    def support_catalog():
+        from .engine_catalog import catalog
+        result = catalog()
+        result['adapters'] = [{'id': cls.id, 'name': getattr(cls, 'name', cls.id)} for cls in adapters._all()]
+        return result
+
     @r.get("/projects/{gid:path}/preview")
     def preview_report(gid: str, label: str):
         p = _project(gid)

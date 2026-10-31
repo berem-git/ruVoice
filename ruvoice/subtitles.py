@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import csv
+import ast
 import difflib
 import io
 import json
@@ -22,7 +23,7 @@ from pathlib import Path
 POOL_FILE = "subtitles.jsonl"
 MIN_SCORE = 0.76  # ниже — уже чужие строки («Thank you.», который Whisper слышит в тишине, даёт 0.75)
 _TAG = re.compile(r"<[^<>]{0,80}>|\{[^{}]{0,40}\}|\[[A-Za-z_]{1,20}\]")
-_PLACEHOLDER = re.compile(r"#rejected#|^\s*(tbd|todo|placeholder|dummy|test)\b|^[A-Z0-9_]{6,}$", re.I)
+_PLACEHOLDER = re.compile(r"#rejected#|^\s*(tbd|todo|placeholder|dummy|test)\b|(?-i:^[A-Z0-9_]{6,}$)", re.I)
 
 
 def clean(t: str) -> str:
@@ -156,7 +157,7 @@ class Matcher:
 EN_TOK = {"en", "eng", "english", "en-us", "en_us", "enus", "en-gb", "en_gb", "us", "int"}
 RU_TOK = {"ru", "rus", "russian", "ru-ru", "ru_ru", "ruru"}
 TEXT_EXT = {".json", ".csv", ".tsv", ".txt", ".xml", ".po", ".ini", ".lang", ".strings", ".yml", ".yaml",
-            ".resx", ".properties", ".srt", ".vtt", ".ass", ".ssa"}
+            ".resx", ".properties", ".srt", ".vtt", ".ass", ".ssa", '.rpy'}
 SKIP_DIRS = {"_commonredist", "redist", "directx", "__pycache__", "binaries", "mono"}
 SKIP_EXT = {".exe", ".dll", ".pak", ".utoc", ".ucas", ".bank", ".fsb", ".pck", ".bnk", ".wem", ".bik", ".bk2",
             ".mp4", ".webm", ".dds", ".png", ".jpg", ".ogg", ".wav", ".mp3", ".ttf", ".otf"}
@@ -241,6 +242,39 @@ def _kv(ext: str, text: str) -> dict[str, str]:
             if m and m.group(2):
                 out[m.group(1).strip()] = m.group(2).replace("\\n", " ")
     return out
+
+
+def _from_rpy(text: str, group: str) -> list[dict]:
+    """Read Ren'Py old/new strings and commented-original dialogue without executing scripts."""
+    pending, rows = None, []
+    quoted = re.compile(r'^\s*(.*?)\s*("(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\')\s*$')
+    excluded = {'voice', 'play', 'scene', 'show', 'hide', 'image', 'define', 'default', 'stop'}
+    for number, raw in enumerate(text.splitlines()):
+        line = raw.strip()
+        comment = line.startswith('#')
+        match = quoted.match(line[1:].strip() if comment else line)
+        if not match:
+            if line.startswith('translate '):
+                pending = None
+            continue
+        prefix, literal = match.groups()
+        token = prefix.split()[0] if prefix else ''
+        if token in excluded:
+            continue
+        try:
+            value = ast.literal_eval(literal)
+        except (ValueError, SyntaxError):
+            continue
+        if not isinstance(value, str):
+            continue
+        value = clean(value)
+        if comment or token == 'old':
+            pending = (value, number)
+        elif pending and number - pending[1] <= 4:
+            if _usable(pending[0], value):
+                rows.append({'key': f'{group}:{number}', 'en': pending[0], 'ru': value, 'group': group})
+            pending = None
+    return rows
 
 
 def _cstr(d: bytes, off: int, wide: bool) -> str | None:
@@ -383,8 +417,22 @@ def _sources(root: Path):
         for n in names:
             p = Path(d) / n
             ext = p.suffix.lower()
+            if ext in {'.pck', '.rpa'}:
+                from .adapters.open_packages import PCK, RPA
+                import pickle, zlib
+                try:
+                    archive = (PCK if ext == '.pck' else RPA)(p)
+                    for entry in archive.entries:
+                        if not entry.flags and 16 < entry.size <= MAX_FILE:
+                            rel = p.relative_to(root).as_posix() + '/' + entry.name
+                            toks = set(re.split(r'[\\/._\-]', rel.lower()))
+                            if toks & (EN_TOK | RU_TOK) or Path(entry.name).suffix.lower() in TEXT_EXT:
+                                found[rel.lower()] = (rel, entry.size, lambda a=archive, e=entry: a.read(e, MAX_FILE))
+                except (OSError, ValueError, EOFError, TypeError, pickle.UnpicklingError, zlib.error):
+                    pass
+                continue
             is_zip = ext == ".zip"
-            if ext in {".dat", ".bin", ".pak"}:
+            if ext in {".dat", ".bin", ".pak", ".pk3", ".pk4", ".iwd", ".love", ".nw"}:
                 try:
                     with p.open("rb") as f:
                         is_zip = f.read(4) == b"PK\x03\x04"
@@ -440,6 +488,9 @@ def harvest(root: Path, progress=lambda *a: None) -> list[dict]:
                 continue
             if ext == ".po" and toks & RU_TOK:
                 rows += _from_po(_decode_text(read()))
+                continue
+            if ext == '.rpy' and toks & RU_TOK:
+                rows += _from_rpy(_decode_text(read()), rel)
                 continue
             if not toks & EN_TOK:
                 continue

@@ -58,7 +58,7 @@ class Jobs:
             self._do_scan_dir(folder, queue_analysis=False)
         self.version += 1
         for gid, g in list(self.lib.games.items()):
-            if force or not g.get("analysis"):
+            if force or not g.get("analysis") or (g.get('analysis') or {}).get('analysis_version', 0) < 2:
                 self.analyze(gid)
             if g.get("appid") and (force or not self.lib.steam_store(g["appid"])):
                 self._put(2, "steam", gid)
