@@ -317,6 +317,45 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
         items = p.lines(status=status, char=char, query=q, limit=limit, offset=offset, rework=rework)
         return {"items": items, "total": p.count(status=status, char=char, query=q, rework=rework)}
 
+    @r.get("/projects/{gid:path}/voice-identities")
+    def voice_identities(gid: str):
+        from . import identity
+        return identity.view(_project(gid))
+
+    @r.post("/projects/{gid:path}/voice-trials")
+    def voice_trials(gid: str, body: Ids):
+        p = _project(gid)
+        if not 1 <= len(body.ids) <= 4 or any(not p.line(i) for i in body.ids):
+            raise HTTPException(400, "Выберите от одной до четырёх исходных реплик")
+        if not all(e in engines.available_tts() for e in ("ru", "voxcpm")):
+            raise HTTPException(400, "Для этих проб нужны Qwen-RU и VoxCPM2")
+        dub.enqueue(gid, "voice_trials", seed_ids=body.ids)
+        return dub.status(gid)
+
+    @r.post("/projects/{gid:path}/voice-identities")
+    def choose_voice_identity(gid: str, body: dict):
+        from . import identity
+        p = _project(gid)
+        if dub.current:
+            raise HTTPException(409, "Дождитесь окончания текущей задачи")
+        try:
+            if body.get("clear"):
+                identity.clear(p, str(body.get("char") or ""))
+            else:
+                token = body.get("candidate")
+                if not token:
+                    line = p.line(str(body.get("line") or ""))
+                    if not line or not line["gen"]:
+                        raise ValueError("Выберите озвученную русскую реплику")
+                    row = identity.propose(p, line["char"], line["gen"],
+                                           (line["info"] or {}).get("spoken") or line["ru"],
+                                           (line["info"] or {}).get("engine") or dub._engine_for(gid), line["id"])
+                    token = row["id"]
+                identity.activate(p, token)
+        except (ValueError, OSError) as error:
+            raise HTTPException(400, str(error))
+        return identity.view(p)
+
     @r.get("/projects/{gid:path}/audio")
     def line_audio(gid: str, id: str = "", kind: str = "orig", file: str = ""):
         p = _project(gid)
@@ -463,7 +502,8 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
         if body.status == "approved":
             targets = [l for l in targets if l["gen"]]
             if body.min_score is not None:  # только те, что контролёр счёл хорошими
-                targets = [l for l in targets if ((l["info"] or {}).get("judge") or {}).get("score", 0) >= body.min_score]
+                targets = [l for l in targets if ((l["info"] or {}).get("judge") or {}).get("score", 0) >= body.min_score
+                           and ((l["info"] or {}).get("judge") or {}).get("verdict") != "rework"]
         with p.db() as c:
             c.executemany("UPDATE lines SET status=? WHERE id=?", [(body.status, l["id"]) for l in targets])
         return {"changed": len(targets)}
@@ -671,6 +711,7 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
                         train_levels=dub.train_levels(gid),
                         bench=p.get("bench") or [], previews=p.get("previews") or [], voice_f0=p.get("voice_f0") or {},
                         review=p.get("review") or {}, char_notes=p.get("char_notes") or {},
+                        voice_anchors=p.get("voice_anchors") or {},
                         selected_chars=(dub.selected(p) and p.get("selected_chars")) or [],
                         last_export=p.get("last_export"), last_import=p.get("last_import"),
                         speaker_proposal=_proposal_view(p.get("speaker_proposal")))

@@ -94,10 +94,10 @@ def _ru_prompt(ref_audio: str, ref_text: str | None):
     key = (ref_audio, ref_text)
     with _lock:
         if key not in _prompts:
+            # Prompts may contain GPU tensors. Keep only the active reference in VRAM.
+            _prompts.clear()
             _prompts[key] = _model.create_voice_clone_prompt(ref_audio=ref_audio, ref_text=ref_text or None,
                                                              x_vector_only_mode=not ref_text)[0]
-            if len(_prompts) > 256:
-                _prompts.pop(next(iter(_prompts)))
         return _prompts[key]
 
 
@@ -133,7 +133,7 @@ def _ru_generate(texts, refs, max_seconds, params) -> list[tuple[np.ndarray, int
     load_ru()
     icl = bool(params.get("icl"))
     _use_voice(refs[0] if refs else None)  # реплики одного вызова — одного персонажа
-    prompts = [_ru_prompt(r["audio"], r.get("text") if icl else None) for r in refs]
+    prompts = [_ru_prompt(r["audio"], r.get("text") if icl or (r.get("identity") and r.get("language") == "ru") else None) for r in refs]
     # Дообученный адаптер учился на раскладке без явного языка (language=auto: 3 служебных токена вместо 4) —
     # с токеном «Russian» он ломает речь; язык модель и так берёт из русского текста
     lang = params.get("language") or ("auto" if any(r.get("voice") for r in refs) else "Russian")
@@ -170,6 +170,7 @@ def synthesize(engine: str, texts: list[str], refs: list[dict], max_seconds: lis
                 dst = Path(td) / "generated.wav"
                 client.get("voxcpm").request({"op": "generate", "text": accent.mark(text, "custom"),
                     "ref_audio": ref["audio"], "out": str(dst), "params": params,
+                    "russian_anchor_text": ref.get("text") if ref.get("identity") and ref.get("language") == "ru" else None,
                     "max_seconds": seconds, "seed": seed})
                 outputs.append(audio.read(dst))
         return outputs

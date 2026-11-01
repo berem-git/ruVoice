@@ -78,7 +78,9 @@ async function pollStudio() {
       || st.message !== old.message || JSON.stringify(info.stats) !== JSON.stringify(studio.info.stats)
       || JSON.stringify(info.samples?.at) !== JSON.stringify(studio.info.samples?.at)
       || info.installed !== studio.info.installed || info.prepared !== studio.info.prepared
-      || JSON.stringify(info.review) !== JSON.stringify(studio.info.review);
+      || JSON.stringify(info.review) !== JSON.stringify(studio.info.review)
+      || JSON.stringify(info.voice_anchors) !== JSON.stringify(studio.info.voice_anchors)
+      || JSON.stringify(info.previews) !== JSON.stringify(studio.info.previews);
   studio.info = info;
   renderJobBar();
   // Не перерисовываем, только пока пользователь печатает в текстовом поле (галочки и списки не в счёт)
@@ -532,6 +534,12 @@ function settingsPanel(info) {
     h("summary", {}, "⚙ Настройки"),
     h("div", { class: "settings" },
       h("h3", {}, "Голос и исходное исполнение"),
+      h("p", { class: "muted small" }, "В списке реплик можно закрепить понравившийся русский голос. Эталон хранится на диске и не меняется при генерации. Сначала проверьте произношение и говорящего на слух."),
+      Object.entries(info.voice_anchors || {}).map(([char]) => h("div", { class: "row" },
+        h("span", {}, `📌 ${info.characters.find(c => c.id === char)?.name || char}: голос закреплён`),
+        h("button", { class: "btn subtle", disabled: !!info.status?.running, onclick: async () => {
+          await api("POST", projUrl("/voice-identities"), { clear: true, char }); refreshStudio();
+        } }, "Снять эталон"))),
       h("button", { class: "btn primary", onclick: () => run("/preview", { count: 2 }) }, "Создать две пробы без установки"),
       (info.previews || []).slice(-3).reverse().map(p => h("p", {}, h("a", {
         href: `/api/projects/${encodeURIComponent(studio.gid)}/preview?label=${encodeURIComponent(p.label)}`,
@@ -630,6 +638,16 @@ function lineCard(l) {
         ta,
         h("div", { class: "row" },
           l.gen && playBtn("gen", l.id, "Русский"),
+          l.orig && l.ru && h("button", { class: "btn", disabled: !!studio.info?.status?.running,
+            title: "Русские эталоны и три контрольные фразы без установки в игру",
+            onclick: () => api("POST", projUrl("/voice-trials"), { ids: [l.id] }).then(pollStudio).catch(e => alert(e.message))
+          }, "Пробы постоянного голоса"),
+          l.gen && h("button", { class: "btn", disabled: !!studio.info?.status?.running,
+            title: "Выберите запись с естественным русским произношением и подходящим голосом",
+            onclick: async () => {
+              await api("POST", projUrl("/voice-identities"), { line: l.id }).catch(e => alert(e.message));
+              refreshStudio();
+            } }, "📌 Закрепить голос"),
           l.gen && l.status !== "approved" && h("button", { class: "btn ok", onclick: () => setStatus("approved") }, "✓ Одобрить"),
           l.gen && l.status !== "rejected" && h("button", { class: "btn danger", onclick: () => setStatus("rejected") }, "✗ Плохо"),
           l.ru && h("button", { class: "btn", onclick: () => api("POST", projUrl("/regenerate"), { ids: [l.id] }).then(pollStudio) }, l.gen ? "⟳ Заново" : "🎙 Озвучить"),

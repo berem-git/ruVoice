@@ -453,7 +453,7 @@ def judge_line(gen_path: str, ru_text: str, orig_path: str, profile: np.ndarray 
 
     result["codes"] = problems
     result["score"] = int(max(0, min(100, score)))
-    result["verdict"] = "ok" if result["score"] >= 70 else "rework"
+    result["verdict"] = "ok" if result["score"] >= 70 and "drift" not in problems else "rework"
     result["reasons"] = reasons
     result["problems"] = _problems(result)
     return result
