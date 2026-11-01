@@ -92,7 +92,7 @@ def pack(dest: Path, version: str) -> Path:
         raise RuntimeError(f'Archive already exists: {target}')
     files = sorted(f for f in dest.rglob('*') if f.is_file() and clean_file(f))
     print(f'Compressing {len(files)} files', flush=True)
-    with zipfile.ZipFile(target, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as archive:
+    with zipfile.ZipFile(target, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as archive:
         for i, path in enumerate(files):
             rel = path.relative_to(dest)
             if rel.parts[0] in {'data', 'models', 'cache', '.git'}:
@@ -100,8 +100,6 @@ def pack(dest: Path, version: str) -> Path:
             archive.write(path, (Path(dest.name) / rel).as_posix())
             if i % 5000 == 0:
                 print(f'Compressed {i}/{len(files)}', flush=True)
-    if target.stat().st_size >= 2 * 1024**3:
-        raise RuntimeError('ZIP exceeds GitHub 2 GiB per-asset limit; split runtime before publication')
     digest = sha256(target)
     (target.parent / 'SHA256SUMS.txt').write_text(f'{digest}  {target.name}\n', 'ascii')
     print(json.dumps({'archive': str(target), 'bytes': target.stat().st_size, 'sha256': digest}), flush=True)

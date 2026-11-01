@@ -1,7 +1,8 @@
 # RuVoice — русская озвучка для игр
 
-**Версия 1.0.0:** [скачать переносимый ZIP для Windows x64](https://github.com/berem-git/ruVoice/releases/tag/v1.0.0).
-Распакуйте архив целиком и запустите `RuVoice.exe`; Python и CUDA входят в комплект,
+**Версия 1.0.0:** [скачать установщик для Windows x64](https://github.com/berem-git/ruVoice/releases/tag/v1.0.0).
+Скачайте `RuVoice-1.0.0-Setup.exe`: он загрузит части архива, проверит и распакует
+программу. Python и CUDA входят в комплект,
 модели скачиваются из интерфейса. Подробнее: [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 **Качество синтеза экспериментальное. Сильный акцент остаётся нерешённым,
