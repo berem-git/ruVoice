@@ -18,6 +18,15 @@ def digest(path):
 
 def main():
     hashes = []
+    if ZIP.stat().st_size <= CHUNK:
+        i = 1
+        hashes.append((ZIP.name, digest(ZIP)))
+    else:
+        i = split(hashes)
+    build(i, hashes)
+
+
+def split(hashes):
     with ZIP.open('rb') as src:
         i = 0
         while True:
@@ -37,6 +46,10 @@ def main():
                     remaining -= len(b)
             hashes.append((target.name, digest(target)))
             print('Split', target.name, target.stat().st_size, flush=True)
+    return i
+
+
+def build(i, hashes):
     source = (ROOT / 'launcher/Installer.cs').read_text('utf-8')
     source = source.replace('__ARCHIVE_SHA256__', digest(ZIP)).replace('__PARTS__', str(i))
     cs = BASE / 'Installer.generated.cs'
@@ -48,9 +61,10 @@ def main():
                     '/reference:System.IO.Compression.dll', '/reference:System.IO.Compression.FileSystem.dll',
                     '/out:' + str(exe), str(cs)], check=True)
     hashes.append((exe.name, digest(exe)))
-    hashes.append((ZIP.name, digest(ZIP)))
+    if not any(name == ZIP.name for name, _ in hashes):
+        hashes.append((ZIP.name, digest(ZIP)))
     (BASE / 'SHA256SUMS.txt').write_text(''.join(f'{h}  {name}\n' for name, h in hashes), 'ascii')
-    (BASE / 'upload-assets.json').write_text(json.dumps([name for name, _ in hashes if name != ZIP.name] + ['SHA256SUMS.txt']), 'utf-8')
+    (BASE / 'upload-assets.json').write_text(json.dumps([name for name, _ in hashes if name != ZIP.name or i == 1] + ['SHA256SUMS.txt']), 'utf-8')
     print('Installer compiled', exe, flush=True)
 
 
