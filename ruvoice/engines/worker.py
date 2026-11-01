@@ -166,12 +166,21 @@ class VoxCPMEngine:
         p = req.get("params") or {}
         instruction = re.sub(r"[()\r\n]", " ", str(p.get("instruct") or ""))[:400]
         text = req["text"]
-        if instruction:
+        # In continuation mode a mid-sentence parenthesized instruction can be spoken aloud.
+        # Keep performance in the target's punctuation; the audio prompt carries the delivery.
+        anchor_text = req.get("russian_anchor_text")
+        if instruction and not anchor_text:
             text = f"({instruction}){text}"
+        extra = {}
+        if anchor_text:
+            if not re.search(r"[А-Яа-яЁё]", anchor_text) or re.search(r"[A-Za-z]", anchor_text):
+                raise ValueError("Продолжение голоса разрешено только с русским эталоном и русским текстом")
+            # Russian continuation supplies pronunciation as well as identity; English ICL stays off.
+            extra = {"prompt_wav_path": req["ref_audio"], "prompt_text": anchor_text}
         wav = self.model.generate(text=text, reference_wav_path=req["ref_audio"],
                                   cfg_value=float(p.get("cfg_value", 2.0)), inference_timesteps=int(p.get("steps", 10)),
                                   max_len=max(20, int(float(req.get("max_seconds", 15)) * 6.25) + 20),
-                                  normalize=False, denoise=False)
+                                  normalize=False, denoise=False, **extra)
         return np.asarray(wav, dtype=np.float32).reshape(-1), self.model.tts_model.sample_rate
 
 

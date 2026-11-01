@@ -373,7 +373,8 @@ def apply(p, proposal: dict, names: dict | None = None, skip: set | None = None)
         # пустые персонажи больше не нужны
         c.execute("DELETE FROM characters WHERE id NOT IN (SELECT DISTINCT char FROM lines WHERE char IS NOT NULL)")
     # профили, отпечатки, выбор и голоса были посчитаны для старой разметки
-    for key in ("profiles", "voice_f0", "emotions", "custom_speakers", "pitch_shift", "review", "samples", "bench_lines"):
+    for key in ("profiles", "voice_f0", "emotions", "custom_speakers", "pitch_shift", "review", "samples", "bench_lines",
+                "ru_voice", "voice_anchors"):
         p.set(key, None)
     p.set("selected_chars", [])
     p.set("speakers_applied", {"at": time.time(), "voices": len(proposal["voices"]), "moved": moved})

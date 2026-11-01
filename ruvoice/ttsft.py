@@ -241,8 +241,13 @@ def attach(talker, voice_dir: str, name: str):
 def activate(talker, name: str | None):
     """Включить адаптер name (None — чистая базовая модель)."""
     from peft.tuners.tuners_utils import BaseTunerLayer
+    dev = next(talker.parameters()).device
     for m in talker.modules():
         if isinstance(m, BaseTunerLayer):
+            # All trained voices may live on disk/CPU; only the selected adapter uses VRAM.
+            for attr in ("lora_A", "lora_B"):
+                for key, adapter in getattr(m, attr, {}).items():
+                    adapter.to(dev if key == name else "cpu")
             if name is None:
                 m.enable_adapters(False)
             else:

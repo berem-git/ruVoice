@@ -173,8 +173,13 @@ class Project:
                     continue
                 c.execute("UPDATE lines SET char=? WHERE char=?", (into, o))
                 c.execute("DELETE FROM characters WHERE id=?", (o,))
+        # A merge changes the meaning of a speaker; references must be chosen again.
+        for key in ("profiles", "ru_voice", "voice_anchors", "voice_f0"):
+            self.set(key, None)
 
     def reset(self):
+        for key in ("voice_anchors", "ru_voice", "profiles", "voice_f0"):
+            self.set(key, None)
         with self.db() as c:
             c.execute("DELETE FROM lines")
             c.execute("DELETE FROM characters")

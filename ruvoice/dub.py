@@ -3,10 +3,10 @@
 Все шаги выполняются в одном фоновом потоке по очереди: нейросети делят одну видеокарту.
 Ничего не записывается в игру, пока пользователь не одобрил реплики и не нажал «Установить».
 
-Один способ озвучки: речь читает русское дообучение Qwen3-TTS — голос снимается отпечатком прямо с записей
-персонажа (без подражания английской речи, чтобы не было акцента), под эмоцию оригинала берётся образец из
-его же реплик с такой эмоцией, ударения расставляет accent.py. По желанию поверх — RVC-модель, обученная на
-записях персонажа (voice_transfer). Русский текст — из официальных субтитров;
+Речь синтезирует выбранный движок VoxCPM2, Qwen-RU или CustomVoice. Закреплённый русский эталон
+сохраняется отдельно и не усредняется с новыми записями. ECAPA проверяет постоянство голоса;
+ни эта проверка, ни распознавание текста не заменяют прослушивания акцента и подачи.
+По желанию поверх — RVC-модель, обученная на записях персонажа (voice_transfer). Русский текст — из официальных субтитров;
 реплики без субтитров остаются в оригинале (перевод нейросетью — только если включить в настройках).
 Контролёр (judge.py) оценивает каждую реплику; плохие переозвучиваются с большим числом вариантов.
 """
@@ -458,6 +458,11 @@ class DubJobs:
         if engine == "voxcpm":
             refs = {}
             for char in chars:
+                from . import identity
+                anchor = identity.active(p, char, engine)
+                if anchor:
+                    refs[char] = identity.reference(anchor)
+                    continue
                 prof = self.character_profile(p, char)
                 if prof:
                     refs[char] = {"audio": prof["audio"], "text": prof["text"], "speaker": None}
@@ -466,6 +471,11 @@ class DubJobs:
             refs = {}
             use_ft = {**DEFAULT_SETTINGS, **(p.get("settings") or {})}["tts_finetune"]
             for c in chars:
+                from . import identity
+                anchor = identity.active(p, c, engine)
+                if anchor:
+                    refs[c] = identity.reference(anchor)
+                    continue
                 tv = self._tts_voice(p, c) if use_ft else None
                 if tv and tv.get("kind") == "full":  # своя дообученная модель: диктор = персонаж
                     refs[c] = {"audio": tv["ref"], "text": None, "speaker": tv["speaker"], "ckpt": tv["dir"], "name": _safe(c)}
@@ -483,6 +493,8 @@ class DubJobs:
         """Для ru: если у оригинала выраженная эмоция и у персонажа есть реплики с такой же — образец из них
         (голос «в гневе» звучит иначе, чем спокойный)."""
         emo = (style or {}).get("emotion")
+        if ref.get("identity"):
+            return ref  # Identity is fixed; emotion may change, the reference may not.
         if not {**DEFAULT_SETTINGS, **(p.get("settings") or {})}["emotion_refs"]:
             return ref  # один отпечаток на персонажа: голос не «плавает» от реплики к реплике
         if engine == "ru" and not ref.get("voice") and not ref.get("ckpt") and emo and emo not in ("neutral", "calm"):
@@ -939,6 +951,10 @@ class DubJobs:
         from . import judge
         if not judge.ecapa_ready():
             return None, None
+        from . import identity
+        anchor = identity.active(p, char)
+        if anchor:
+            return identity.centroid(p, anchor, judge.ecapa_embed)
         rv = (p.get("ru_voice") or {}).get(char)
         if rv and rv.get("e"):
             e = np.asarray(rv["e"], dtype=np.float32)
@@ -955,6 +971,8 @@ class DubJobs:
         return e, None
 
     def _ru_voice_add(self, p: Project, char: str, emb: np.ndarray, sim: float):
+        if (p.get("voice_anchors") or {}).get(char):
+            return  # Never let generated takes move an approved anchor.
         all_rv = p.get("ru_voice") or {}
         rv = all_rv.get(char) or {"e": emb.tolist(), "n": 0, "sims": []}
         n = min(int(rv.get("n") or 0), 60)
@@ -1103,8 +1121,10 @@ class DubJobs:
         use_judge = self._judge_ready(gid)
         info = accel.info()
         inline_asr = use_judge and info["device"] == "cuda" and (info["vram_gb"] or 0) >= 10
-        stable = bool(s["stable_voice"]) and engine == "ru"
+        stable = bool(s["stable_voice"]) and engine in ("ru", "voxcpm")
         use_ecapa = stable and judge.ecapa_ready()
+        if any((p.get("voice_anchors") or {}).get(l["char"]) for l in lines) and not use_ecapa:
+            raise RuntimeError("Для закреплённого голоса включите стабильность голоса и установите ECAPA")
         use_pron = use_judge and inline_asr and pron.ready()
         take = self._take(gid)
         if not fix and self._director_ready(gid):
@@ -1165,7 +1185,7 @@ class DubJobs:
                     texts.append(text)
                     maxlen = max((l["duration"] or 2) * 2.0, 3.0) + len(l["ru"]) * 0.03
                     params = {"speaker": refs[l["char"]].get("speaker"), **self._style_params(p, l, engine)}
-                    if stable:
+                    if stable and engine == "ru":
                         params["temperature"] = 0.75 + 0.05 * min(3, int(deliv.get("intensity") or 0))
                         params["subtalker_temperature"] = 0.5
                     if plan:
@@ -1236,13 +1256,21 @@ class DubJobs:
                                               consistency=cons[k], cons_floor=floor, pron=prons[k],
                                               gen_stats=gstats, orig_stats=ostats, events_kept=finfo.get("kept"))
                         jr["problems"] = judge._problems(jr)
+                    if cons[k] is not None and floor is not None and cons[k] < floor:
+                        jr = jr or {"score": 0, "reasons": [], "codes": []}
+                        jr.update(verdict="rework", consistency=round(cons[k], 3))
+                        if "drift" not in jr.get("codes", []):
+                            jr.setdefault("codes", []).append("drift")
+                        jr["problems"] = judge._problems(jr)
                     # оценка контролёра + сходство с «русским голосом» персонажа + чистота произношения
                     score = ((jr["score"] if jr else 0) + (30 * cons[k] if cons[k] is not None else 0)
                              - (60 * prons[k]["cer"] if prons[k] else 0))
+                    if cons[k] is not None and floor is not None and cons[k] < floor:
+                        score -= 1000  # A good transcript cannot outweigh the wrong voice.
                     if best is None or score > best_score:
                         best, best_info, best_judge, best_k, best_score = fitted, finfo, jr or {"score": 0}, k, score
                     tmp.unlink(missing_ok=True)
-                if embs is not None and cons[best_k] is not None and (best_judge.get("verdict") != "rework" or not fix):
+                if embs is not None and cons[best_k] is not None and best_judge.get("verdict") != "rework":
                     self._ru_voice_add(p, l["char"], embs[best_k], cons[best_k])
                 if i < 12 or i % 200 == 0:
                     print(f"озвучка: реплика {i} ({l['char']}, {len(scored)} вар.) за {time.time() - t_line:.1f} с")
@@ -1253,6 +1281,8 @@ class DubJobs:
                 old_info = l["info"] or {}
                 new_info = {"fit": best_info, "flag": "long" if ratio > 1.35 else ("short" if ratio < 0.45 else None),
                             "engine": engine, "trained": bool(voices.get(l["char"])), "candidates": len(scored),
+                            "voice_identity": refs[l["char"]].get("identity"),
+                            "identity_similarity": cons[best_k], "identity_floor": floor,
                             "speech": old_info.get("speech"), "style": self._style_cache.get(l["id"]),
                             "delivery": old_info.get("delivery"), "performance": old_info.get("performance"),
                             "spoken": text if text != l["ru"] else None}
@@ -1260,7 +1290,7 @@ class DubJobs:
                     new_info["fix"] = plan
                     new_info["fix_history"] = (old_info.get("fix_history") or [])[-4:] + [
                         {"round": plan.get("round"), "problems": plan.get("problems"), "score_before": (old_info.get("judge") or {}).get("score")}]
-                if use_judge and best_judge.get("verdict"):
+                if (use_judge or stable) and best_judge.get("verdict"):
                     new_info["judge"] = best_judge
                 p.update_line(l["id"], gen=str(out.relative_to(p.dir)), gen_duration=round(len(best) / orig_sr, 3),
                               status="generated", info=new_info, error=None)
@@ -1678,12 +1708,12 @@ class DubJobs:
         elif engine == "ru":
             tts.load_ru()
         outs = []
-        stable = bool(self.settings(gid)["stable_voice"]) and engine == "ru"
+        stable = bool(self.settings(gid)["stable_voice"]) and engine in ("ru", "voxcpm")
         for l in lines:  # по одной: у каждой реплики своя подача под эмоцию оригинала
             params = {"speaker": ref.get("speaker"), **self._style_params(p, l, engine)}
             deliv = (l["info"] or {}).get("delivery") or {}
             text = deliv.get("text") if deliv.get("text") and director_same(deliv["text"], l["ru"]) else l["ru"]
-            if stable:
+            if stable and engine == "ru":
                 params["temperature"] = 0.75 + 0.05 * min(3, int(deliv.get("intensity") or 0))
                 params["subtalker_temperature"] = 0.5
             outs += tts.synthesize(engine, [text], [self._ref_for_line(p, l, engine, ref, params)],
@@ -2163,6 +2193,13 @@ class DubJobs:
         from . import preview
         result = preview.run(self, gid, count, engine, ids, label)
         self._finish(gid, f"Пробы готовы: {result['label']} ({len(result['rows'])})")
+
+    def _do_voice_trials(self, gid: str, seed_ids: list[str], label: str | None = None):
+        from . import voice_trials
+        self._release_translator()
+        result = voice_trials.run(self.project(gid), seed_ids, label,
+                                  report=self._progress(gid), cancel=self.cancel_flag.is_set)
+        self._finish(gid, f"Пробы закреплённого голоса готовы: {result['label']}")
 
     def _do_bench(self, gid: str, label: str | None = None):
         """Озвучить постоянный контрольный набор реплик текущим способом и оценить (bench.py)."""
