@@ -24,7 +24,8 @@ class Rename(BaseModel):
 
 
 def create_app(lib: Library, jobs: Jobs, dub=None) -> FastAPI:
-    app = FastAPI(title="RuVoice")
+    from . import __version__
+    app = FastAPI(title="RuVoice", version=__version__)
 
     @app.middleware("http")
     async def no_cache(request, call_next):
