@@ -10,7 +10,8 @@ using System.Windows.Forms;
 [assembly: System.Reflection.AssemblyTitle("RuVoice")]
 [assembly: System.Reflection.AssemblyProduct("RuVoice")]
 [assembly: System.Reflection.AssemblyDescription("Русская озвучка для игр")]
-[assembly: System.Reflection.AssemblyVersion("0.1.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
 
 static class Launcher
 {

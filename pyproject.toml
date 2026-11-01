@@ -1,6 +1,6 @@
 [project]
 name = "ruvoice"
-version = "0.1.0"
+version = "1.0.0"
 description = "Русская озвучка для игр голосами оригинальных персонажей"
 requires-python = ">=3.12,<3.13"
 dependencies = [

@@ -104,6 +104,14 @@ class IdentityTests(unittest.TestCase):
         self.p.merge_characters('voice2', ['voice1'])
         self.assertIsNone(identity.active(self.p, 'voice1'))
 
+    def test_rejected_accent_sample_cannot_be_activated(self):
+        row = self.propose()
+        identity.activate(self.p, row['id'])
+        identity.reject(self.p, row['id'], 'Сильный акцент, проверено пользователем')
+        self.assertIsNone(identity.active(self.p, 'voice1'))
+        with self.assertRaises(ValueError):
+            identity.activate(self.p, row['id'])
+
     def test_prompt_cache_keeps_only_active_voice(self):
         model = Mock()
         model.create_voice_clone_prompt.return_value = [object()]

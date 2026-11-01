@@ -76,10 +76,23 @@ def get(p, token: str) -> dict:
 
 def activate(p, token: str) -> dict:
     row = get(p, token)
+    if row.get("rejected_at"):
+        raise ValueError("Этот образец отклонён после прослушивания: " + row.get("rejection_reason", "качество речи"))
     anchors = p.get("voice_anchors") or {}
     anchors[row["char"]] = {"id": token, "approved_at": time.time()}
     p.set("voice_anchors", anchors)
     return row
+
+
+def reject(p, token: str, reason: str):
+    candidates = p.get("voice_candidates") or {}
+    if token not in candidates:
+        raise ValueError("Нет такого эталона")
+    row = candidates[token]
+    row.update(rejected_at=time.time(), rejection_reason=reason)
+    p.set("voice_candidates", candidates)
+    if ((p.get("voice_anchors") or {}).get(row["char"]) or {}).get("id") == token:
+        clear(p, row["char"])
 
 
 def clear(p, char: str):
