@@ -1,6 +1,6 @@
 # Third-party components
 
-RuVoice's portable package includes third-party runtime components. Their
+RuVoice's portable package includes third-party runtime components. PyTorch/CUDA are downloaded separately by the installer. Their
 copyright and license files are retained in the runtime and tool directories.
 The release manifest lists the installed Python distributions and versions.
 Model weights are downloaded separately and have their own model licenses.

@@ -60,7 +60,7 @@ static class Installer
                     string combined = Path.Combine(cache, Archive);
                     using (var output = new FileStream(combined, FileMode.CreateNew))
                     for (int i = 1; i <= Parts; i++) {
-                        string name = Archive + "." + i.ToString("000");
+                        string name = Parts == 1 ? Archive : Archive + "." + i.ToString("000");
                         string local = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, name);
                         if (!File.Exists(local)) {
                             update("Скачивание части " + i + "/" + Parts + "…");
@@ -80,6 +80,20 @@ static class Installer
                     }
                     update("Проверка SHA-256 и распаковка…");
                     ExtractVerified(combined, target);
+                    update("Установка NVIDIA CUDA из официального репозитория PyTorch…");
+                    var uv = new ProcessStartInfo(Path.Combine(installed, @"tools\uv\uv.exe"),
+                        "pip install --no-deps --link-mode copy --target \"" + Path.Combine(installed, @"runtime\accel\cuda") +
+                        "\" --python \"" + Path.Combine(installed, @"runtime\python\python.exe") +
+                        "\" --index-url https://download.pytorch.org/whl/cu128 torch==2.11.0+cu128 torchaudio==2.11.0+cu128") {
+                        WorkingDirectory = installed, UseShellExecute = false, CreateNoWindow = true,
+                        RedirectStandardOutput = true, RedirectStandardError = true };
+                    uv.EnvironmentVariables["UV_CACHE_DIR"] = Path.Combine(installed, @"cache\uv");
+                    using (var process = Process.Start(uv)) {
+                        var stdout = process.StandardOutput.ReadToEndAsync();
+                        var stderr = process.StandardError.ReadToEndAsync();
+                        process.WaitForExit();
+                        if (process.ExitCode != 0) throw new IOException("Не удалось скачать CUDA. Запустите «Установить CUDA.cmd» из папки программы.\n" + stderr.Result);
+                    }
                     // Delete only installer-owned temporary files, never the chosen destination.
                     foreach (string f in Directory.GetFiles(cache)) File.Delete(f);
                     Directory.Delete(cache);

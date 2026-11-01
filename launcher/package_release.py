@@ -16,7 +16,7 @@ SKIP = {'__pycache__', '.git', '.cache', '.pytest_cache'}
 SOURCE_ROOTS = {'ruvoice', 'launcher', 'tests'}
 SOURCE_FILES = {'README.md', 'pyproject.toml', 'uv.lock', 'requirements-voxcpm.txt',
                 'KNOWN_ISSUES.md', 'RELEASE_NOTES.md', 'THIRD_PARTY_NOTICES.md'}
-RUNTIME_ROOTS = ('runtime/python', 'runtime/accel/cuda', 'runtime/engines/voxcpm')
+RUNTIME_ROOTS = ('runtime/python', 'runtime/engines/voxcpm')
 TOOL_ROOTS = ('tools/vgmstream', 'tools/llama.cpp', 'tools/repak', 'tools/retoc', 'tools/uv', 'tools/fromsoft')
 
 
@@ -72,17 +72,19 @@ def stage(version: str, base: Path) -> Path:
                     str(ROOT / 'launcher/build.ps1'), '-Output', str(exe)], check=True, cwd=ROOT)
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     distributions = {}
-    for relative in ('runtime/python/Lib/site-packages', 'runtime/accel/cuda', 'runtime/engines/voxcpm'):
+    for relative in ('runtime/python/Lib/site-packages', 'runtime/engines/voxcpm'):
         distributions[relative] = sorted([{'name': d.metadata['Name'], 'version': d.version}
                                          for d in importlib.metadata.distributions(path=[str(dest / relative)])],
                                         key=lambda d: d['name'].lower())
     manifest = {'version': version, 'platform': 'windows-x64', 'source_commit': commit,
                 'built_at_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-                'models_included': False, 'user_data_included': False, 'speech_quality': 'experimental_accent_unresolved',
+                'models_included': False, 'user_data_included': False, 'cuda_delivery': 'official PyTorch download during setup',
+                'speech_quality': 'experimental_accent_unresolved',
                 'runtime_distributions': distributions, 'checks': {},
                 'launcher_sha256': sha256(exe), 'file_count': len(files) + 3}
     (dest / 'release-manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), 'utf-8')
     (dest / 'START_HERE.txt').write_text((ROOT / 'RELEASE_NOTES.md').read_text('utf-8'), 'utf-8-sig')
+    shutil.copy2(ROOT / 'launcher/install-cuda.cmd', dest / 'Установить CUDA.cmd')
     return dest
 
 
@@ -90,11 +92,14 @@ def pack(dest: Path, version: str) -> Path:
     target = dest.parent / f'RuVoice-{version}-Windows-x64.zip'
     if target.exists():
         raise RuntimeError(f'Archive already exists: {target}')
-    files = sorted(f for f in dest.rglob('*') if f.is_file() and clean_file(f))
+    files = sorted(f for f in dest.rglob('*') if f.is_file() and clean_file(f)
+                   and f.relative_to(dest).parts[:3] != ('runtime', 'accel', 'cuda'))
     print(f'Compressing {len(files)} files', flush=True)
     with zipfile.ZipFile(target, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as archive:
         for i, path in enumerate(files):
             rel = path.relative_to(dest)
+            if rel.parts[:3] == ('runtime', 'accel', 'cuda'):
+                continue
             if rel.parts[0] in {'data', 'models', 'cache', '.git'}:
                 raise RuntimeError(f'User data in release: {rel}')
             archive.write(path, (Path(dest.name) / rel).as_posix())
