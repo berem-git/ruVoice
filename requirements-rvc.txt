@@ -1,0 +1,31 @@
+# Среда RVC (Applio 3.7.1) в runtime/engines/rvc: ставится без зависимостей (uv pip install --no-deps --target).
+# PyTorch, torchaudio, numpy, scipy, soundfile, soxr, psutil, requests, tqdm, click, einops, protobuf, packaging,
+# pyyaml, safetensors, regex, filelock берутся из runtime/python. Список = «+» из
+# `uv pip install --dry-run` для верхних пакетов Applio (requirements-engine.txt) минус пакеты основной среды.
+absl-py==2.5.1
+audioread==3.1.0
+contourpy==1.4.0
+cycler==0.12.1
+faiss-cpu==1.14.3
+fonttools==4.68.0
+grpcio==1.85.1
+hf-xet==1.8.0
+huggingface-hub==1.33.0
+hyper-connections==0.4.11
+kiwisolver==1.5.1
+librosa==0.11.0
+local-attention==1.11.2
+markdown==3.11.3
+matplotlib==3.11.0
+ml-dtypes==0.6.0
+onnx==1.23.1
+pyparsing==3.3.3
+resampy==0.4.3
+stftpitchshift==2.0
+tensorboard==2.21.0
+tensorboard-data-server==0.7.2
+torch-einops-utils==0.2.6
+torchcrepe==0.0.24
+torchfcpe==0.0.4
+transformers==5.13.1
+werkzeug==3.1.9

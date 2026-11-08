@@ -1,0 +1,11 @@
+# Среда OmniVoice 0.2.1 в runtime/engines/omnivoice: ставится без зависимостей (uv pip install --no-deps --target).
+# PyTorch, torchaudio, numpy, soundfile и прочее берутся из runtime/python; свои transformers/tokenizers/huggingface-hub.
+# Список = «+» из `uv pip install --dry-run omnivoice` минус пакеты основной среды.
+braceexpand==0.1.7
+hf-xet==1.8.0
+huggingface-hub==1.33.0
+omnivoice==0.2.1
+tensorboardx==2.6.5
+tokenizers==0.23.3
+transformers==5.22.2
+webdataset==1.0.2

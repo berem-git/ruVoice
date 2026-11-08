@@ -117,9 +117,19 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
     @r.get("/system")
     def system_info():
         from . import power
+        from .engines import install
         return {"accel": system["accel"], "tools": tools.status(), "models": models.status(system["accel"]),
-                "engines": engines.describe(), "amd_install": system["amd_install"], "variants": accel.VARIANTS,
-                "power": power.describe()}
+                "engines": engines.describe(), "engine_envs": install.status(), "amd_install": system["amd_install"],
+                "variants": accel.VARIANTS, "power": power.describe()}
+
+    @r.post("/system/engines/install")
+    def install_engine(body: dict):
+        """Поставить среду движка (rvc / omnivoice / voxcpm) в фоне; ход — в GET /system → engine_envs."""
+        from .engines import install
+        engine = str((body or {}).get("engine") or "")
+        if engine not in install.ENVS:
+            raise HTTPException(400, "Неизвестная среда движка")
+        return install.install_async(engine)
 
     def _dir_gb(path) -> float:
         from pathlib import Path

@@ -100,11 +100,31 @@ function systemPanel(sys) {
           ? h("button", { class: "btn subtle small", disabled: dl.running, onclick: () => deleteModel(k, mm.name) }, "Удалить")
           : h("button", { class: "btn small", disabled: dl.running, onclick: () => installKeys([k]) }, "Скачать"))))))),
 
+    h("h3", {}, "Среды движков"),
+    enginesPanel(sys.engine_envs),
+
     h("h3", {}, "Место на диске"),
     storagePanel(sys.storage),
 
     h("h3", {}, "Инструменты"),
     h("ul", { class: "models" }, Object.entries(sys.tools).map(([k, v]) => h("li", {}, v ? "✓ " : "✗ ", k))));
+}
+
+// Среды движков (перенос тембра RVC, OmniVoice, VoxCPM2): ставятся из программы, ход виден здесь
+const ENV_DESC = { rvc: "Обученный тембр главных персонажей: Applio + претрейны, ~1,5 ГБ. Без него главные персонажи идут быстрым путём.",
+  omnivoice: "Донорский голос с тегами смеха и вздохов; модель ~2,5 ГБ скачается следом.",
+  voxcpm: "Клонирование с записи персонажа (только эпизодические); модель ~4,7 ГБ скачается следом." };
+function enginesPanel(envs) {
+  if (!envs) return h("p", { class: "muted small" }, "Нет данных");
+  const anyRunning = Object.values(envs).some(e => e.running);
+  return h("div", { class: "tiers" }, Object.entries(envs).map(([id, e]) => h("div", { class: `tier ${e.installed ? "installed" : ""}` },
+    h("div", { class: "tier-head" }, h("b", {}, e.name), e.installed && h("span", { class: "pill ok" }, "✓ Установлена")),
+    h("p", {}, ENV_DESC[id] || ""),
+    e.running ? h("div", { class: "row" }, h("span", { class: "spinner" }), h("span", { class: "muted small" }, e.message)) : "",
+    e.error ? h("p", { class: "error" }, e.error) : "",
+    h("div", { class: "row" }, h("button", { class: `btn ${id === "rvc" && !e.installed ? "primary" : ""} small`, disabled: anyRunning,
+      onclick: async () => { try { await api("POST", "/api/system/engines/install", { engine: id }); } catch (x) { alert(x.message); return; } pollSystemUntilIdle(); } },
+      e.installed ? "Переустановить" : "Установить")))));
 }
 
 async function installTier(tier) {
@@ -132,7 +152,7 @@ async function pollSystemUntilIdle() {
     while (true) {
       const s = await loadSystem();
       rerenderSystem();
-      if (!s?.amd_install?.running && !s?.models?.download?.running) break;
+      if (!s?.amd_install?.running && !s?.models?.download?.running && !Object.values(s?.engine_envs || {}).some(e => e.running)) break;
       await new Promise(r => setTimeout(r, 2000));
     }
   } finally { sysPolling = false; }
