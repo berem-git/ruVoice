@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = sys.argv[1] if len(sys.argv) > 1 else '1.1.1'
+VERSION = sys.argv[1] if len(sys.argv) > 1 else '1.1.2'
 BASE = ROOT / 'dist' / VERSION
 ZIP = BASE / f'RuVoice-{VERSION}-Windows-x64.zip'
 CHUNK = 1536 * 1024**2
