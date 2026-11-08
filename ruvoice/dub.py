@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 
 from . import adapters, audio
-from .engines import available_tts, rvc_available
+from .engines import rvc_available
 from .director import same_words as director_same
 from .judge import DRIFT_MARGIN
 from .paths import DATA_DIR
@@ -425,85 +425,108 @@ class DubJobs:
             print(f"профиль голоса: не удалось оценить реплики ({e})")
             return lines
 
-    def _refs_for(self, p: Project, engine: str, chars: set[str]) -> dict[str, dict]:
-        """Образец голоса для движка: ru — профиль персонажа (отпечаток снимается с его записей);
-        custom — ближайший готовый диктор."""
-        if engine == "voxcpm":
-            refs = {}
-            for char in chars:
-                from . import identity
-                anchor = identity.active(p, char, engine)
-                if anchor:
-                    refs[char] = identity.reference(anchor)
-                    continue
-                prof = self.character_profile(p, char)
-                if prof:
-                    refs[char] = {"audio": prof["audio"], "text": prof["text"], "speaker": None}
-            return refs
-        if engine == "ru":
-            refs = {}
-            use_ft = {**DEFAULT_SETTINGS, **(p.get("settings") or {})}.get("tts_finetune", False)
-            for c in chars:
-                from . import identity
-                anchor = identity.active(p, c, engine)
-                if anchor:
-                    refs[c] = identity.reference(anchor)
-                    continue
-                tv = self._tts_voice(p, c) if use_ft else None
-                if tv and tv.get("kind") == "full":  # своя дообученная модель: диктор = персонаж
-                    refs[c] = {"audio": tv["ref"], "text": None, "speaker": tv["speaker"], "ckpt": tv["dir"], "name": _safe(c)}
-                    continue
-                if tv:  # LoRA-адаптер поверх базовой модели: тот же образец, что при обучении
-                    refs[c] = {"audio": tv["ref"], "text": None, "speaker": None, "voice": tv["dir"], "name": _safe(c)}
-                    continue
-                prof = self.character_profile(p, c)
-                if prof:
-                    refs[c] = {"audio": prof["audio"], "text": prof["text"], "speaker": None}
-            return refs
-        return {c: {"speaker": self._custom_speaker_for(p, c)} for c in chars}
+    def voice_plan(self, p: Project, char: str, rvc: dict | None = None) -> dict:
+        """План голоса персонажа (конвейер v2): главный с принятой моделью тембра — русский донор + тембр;
+        иначе быстрый путь: клонирование с записи персонажа (episodic_mode=clone) или донор без тембра (donor).
+        rvc — модель-кандидат для контроля (timbre.calibrate): план строится так, будто она принята."""
+        from . import donors, engines, timbre
+        s = self.settings(p.game_id)
+        over = (p.get("timbre_override") or {}).get(char)
+        row = next((c for c in p.characters() if c["id"] == char), {"id": char, "seconds": 0, "lines": 0})
+        tier = timbre.tier(row, s, over)
+        plan = {"tier": tier, "source": None, "clone": None, "donor": None, "rvc": None, "timbre": False, "reason": None,
+                "speaker": None, "pitch": 0}
+        srcs, clns = engines.sources(), engines.cloners()
 
-    def _ref_for_line(self, p: Project, line: dict, engine: str, ref: dict, style: dict) -> dict:
-        """Для ru: если у оригинала выраженная эмоция и у персонажа есть реплики с такой же — образец из них
-        (голос «в гневе» звучит иначе, чем спокойный)."""
-        emo = (style or {}).get("emotion")
-        if ref.get("identity"):
-            return ref  # Identity is fixed; emotion may change, the reference may not.
-        if not {**DEFAULT_SETTINGS, **(p.get("settings") or {})}.get("emotion_refs", False):
-            return ref  # один отпечаток на персонажа: голос не «плавает» от реплики к реплике
-        if engine == "ru" and not ref.get("voice") and not ref.get("ckpt") and emo and emo not in ("neutral", "calm"):
-            ep = self.character_profile(p, line["char"], emotion=emo)
-            if ep:
-                return {"audio": ep["audio"], "text": ep["text"], "speaker": None}
-        return ref
+        def pick(pref, avail, default):
+            if pref != "auto" and pref in avail:
+                return pref
+            return default if default in avail else (avail[0] if avail else None)
+        source, clone = pick(s["speech_source"], srcs, DEFAULT_SOURCE), pick(s["clone_engine"], clns, DEFAULT_CLONE)
+        plan["clone"] = clone
+        if rvc is not None:
+            plan["rvc"], plan["timbre"] = rvc, True
+        elif tier == "main":
+            if not engines.rvc_available():
+                plan["reason"] = "перенос тембра не установлен"
+            else:
+                v, entry = timbre.voice(p, char), timbre.entry(p, char)
+                if v:
+                    plan["rvc"], plan["timbre"] = v, True
+                elif entry and entry.get("val") is not None:
+                    plan["reason"] = "модель тембра не прошла контроль"
+                else:
+                    plan["reason"] = "тембр ещё не обучен"
+        else:
+            plan["reason"] = "эпизодический персонаж"
+        if plan["timbre"] or s["episodic_mode"] == "donor":
+            if not source:
+                raise RuntimeError("Нет готового движка русской речи: скачайте Qwen-RU в «Система и нейросети»")
+            plan["source"] = source
+            if source in ("ru", "omnivoice"):
+                a = donors.assigned(self, p, char)
+                plan["donor"] = {"id": a["id"], "pitch": int(a.get("pitch") or 0)}
+                plan["pitch"] = plan["donor"]["pitch"]
+            else:
+                plan["speaker"] = self._custom_speaker_for(p, char) if source == "custom" else self._silero_speaker_for(p, char)
+                plan["pitch"] = self._speaker_pitch(p, char, source, plan["speaker"])
+        else:
+            if not clone:
+                raise RuntimeError("Нет готового движка клонирования голоса: скачайте Qwen-RU в «Система и нейросети»")
+            plan["source"] = clone
+        return plan
+
+    def line_ref(self, p: Project, line: dict, plan: dict) -> dict:
+        """Образец для реплики по плану: донор в подаче под эмоцию, диктор, либо запись персонажа (быстрый путь)."""
+        src = plan["source"]
+        if plan.get("donor"):
+            from . import donors
+            donor = donors.by_id(donors.load(), plan["donor"]["id"])
+            if not donor:
+                raise RuntimeError("Донор персонажа не найден в банке — выберите другого на экране «Голоса»")
+            return donors.reference(donor, donors.style_for(self._line_emotion(p, line)))
+        if plan.get("speaker"):
+            return {"speaker": plan["speaker"]}
+        prof = self.character_profile(p, line["char"])
+        if not prof:
+            raise RuntimeError("Не удалось собрать образец голоса персонажа")
+        return {"audio": prof["audio"], "text": prof["text"] if src == "omnivoice" else None, "language": "en", "speaker": None}
+
+    def _line_emotion(self, p: Project, line: dict) -> str | None:
+        st = self._style_cache.get(line["id"])
+        if st and st.get("emotion"):
+            return st["emotion"]
+        emo = self._emotions_for_char(p, line["char"]).get(line["id"])
+        return emo[0] if emo else None
+
+    def _silero_speaker_for(self, p: Project, char: str) -> str:
+        """Диктор Silero под персонажа: по полу (высота голоса) и отпечатку."""
+        from . import basevoices, judge
+        f0 = self.profile_f0(p, char)
+        gender = ("male" if f0 < 165 else "female") if f0 else None
+        prof = self.character_profile(p, char)
+        emb = judge.speaker_embed([prof["audio"]]) if prof and judge.VE_WEIGHTS.exists() else None
+        return basevoices.pick_for(emb, gender)
 
     SPEAKER_PICK_VERSION = 3  # 3: высота голоса через pyin; 2: сначала высота голоса, потом отпечаток (раньше мужчинам доставался женский диктор)
 
-    def _rvc_params(self, p: Project, char: str, engine: str, speaker: str) -> dict:
-        """Параметры переноса тембра: постоянный сдвиг высоты от диктора к персонажу (полутоны), без
-        автоподгонки каждой реплики к 155 Гц — она ломала женские голоса и стирала разницу между спокойной
-        и взволнованной подачей."""
-        if engine == "ru":  # речь уже в высоте голоса персонажа (образец — его записи)
-            return {"pitch": 0, "auto_pitch": False, "index_rate": 0.0, "protect": 0.5}
+    def _speaker_pitch(self, p: Project, char: str, source: str, speaker: str) -> int:
+        """Постоянный сдвиг высоты (полутоны) от готового диктора к персонажу для переноса тембра; кэш в проекте."""
         cache = p.get("pitch_shift") or {}
-        key = f"{engine}:{speaker}:{char}"
+        key = f"{source}:{speaker}:{char}"
         if key not in cache:
-            from . import basevoices
-            prof = self.character_profile(p, char)
-            clip = (basevoices.CLIPS_DIR / "custom" / f"{speaker}.wav") if engine == "custom" \
-                else Path(basevoices.reference_clip(speaker, False)["audio"])
+            from . import basevoices, donors
             shift = 0
             try:
-                tw, tsr = audio.read(prof["audio"])
+                clip = (basevoices.CLIPS_DIR / "custom" / f"{speaker}.wav") if source == "custom" \
+                    else Path(basevoices.reference_clip(speaker, False)["audio"])
                 sw, ssr = audio.read(clip)
-                tf, sf_ = audio.f0_median(tw, tsr), audio.f0_median(sw, ssr)
-                if tf and sf_:
-                    shift = int(round(max(-12, min(12, 12 * np.log2(tf / sf_)))))
-                print(f"сдвиг высоты для «{char}»: {shift} пт (персонаж {tf:.0f} Гц, диктор {speaker} {sf_:.0f} Гц)")
+                shift = donors.pitch_shift(self.profile_f0(p, char), audio.f0_median(sw, ssr))
             except Exception as e:
                 print(f"сдвиг высоты для «{char}» не вычислен: {e}")
             cache[key] = shift
             p.set("pitch_shift", cache)
-        return {"pitch": cache[key], "auto_pitch": False, "index_rate": 0.0, "protect": 0.5}
+        return int(cache[key])
 
     def _custom_speaker_for(self, p: Project, char: str) -> str:
         """Готовый диктор CustomVoice, ближайший к голосу персонажа: сначала по высоте голоса, затем по отпечатку."""
@@ -550,24 +573,23 @@ class DubJobs:
         p.set("custom_speakers", cs)
         return chosen
 
-    def _engine_for(self, gid: str) -> str:
-        avail = available_tts()
-        chosen = self.settings(gid).get("speech_engine", "auto")
-        if chosen != "auto":
-            if chosen not in avail:
-                raise RuntimeError(f"Движок {chosen} не готов: скачайте модель и установите его среду")
-            return chosen
-        for v in VOICE_VARIANTS:
-            if v in avail:
-                return v
-        raise RuntimeError("Нет модели речи: скачайте CustomVoice в «Система и нейросети»")
-
     def _take(self, gid: str) -> int:
         """Номер прогона проб («переделать пробы» = другой прогон с другими случайными зёрнами)."""
         return int(self.project(gid).get("voice_variant") or 0)
 
     def variant_info(self, gid: str) -> dict:
-        return {"index": self._take(gid) + 1, "engine": self._engine_for(gid) if available_tts() else None}
+        """Какие движки сейчас выбраны: источник русской речи (донор) и клонировщик быстрого пути."""
+        from . import engines
+        s = self.settings(gid)
+        srcs, clns = engines.sources(), engines.cloners()
+
+        def pick(pref, avail, default):
+            if pref != "auto" and pref in avail:
+                return pref
+            return default if default in avail else (avail[0] if avail else None)
+        source = pick(s["speech_source"], srcs, DEFAULT_SOURCE)
+        return {"index": self._take(gid) + 1, "source": source, "clone": pick(s["clone_engine"], clns, DEFAULT_CLONE),
+                "engine": source}
 
     # --- шаги ---
 
@@ -821,21 +843,19 @@ class DubJobs:
     # --- стабильность голоса: «русский голос» персонажа ---
 
     def _ru_voice(self, p: Project, char: str) -> tuple[np.ndarray | None, float | None]:
-        """Центр отпечатков (ECAPA) уже озвученных реплик персонажа и нижняя граница «своего» голоса.
-        Пока реплик мало — центр стоит на оригинальном голосе персонажа."""
+        """«Русский голос» персонажа для контролёра: фиксированный центр ECAPA после контроля тембра
+        (timbre.calibrate) или отпечаток оригинального профиля; порог дрейфа — по накопленным сходствам."""
         from . import judge
         if not judge.ecapa_ready():
             return None, None
-        from . import identity
-        anchor = identity.active(p, char)
-        if anchor:
-            return identity.centroid(p, anchor, judge.ecapa_embed)
         rv = (p.get("ru_voice") or {}).get(char)
         if rv and rv.get("e"):
             e = np.asarray(rv["e"], dtype=np.float32)
+            e = e / (np.linalg.norm(e) + 1e-9)
+            if rv.get("fixed"):
+                return e, rv.get("floor")
             sims = rv.get("sims") or []
-            floor = (float(np.median(sims)) - DRIFT_MARGIN) if len(sims) >= 6 else None
-            return e / (np.linalg.norm(e) + 1e-9), floor
+            return e, (float(np.median(sims)) - DRIFT_MARGIN) if len(sims) >= 6 else None
         prof = self.character_profile(p, char)
         if not prof:
             return None, None
@@ -845,15 +865,12 @@ class DubJobs:
         p.set("ru_voice", all_rv)
         return e, None
 
-    def _ru_voice_add(self, p: Project, char: str, emb: np.ndarray, sim: float):
-        if (p.get("voice_anchors") or {}).get(char):
-            return  # Never let generated takes move an approved anchor.
+    def _ru_voice_note(self, p: Project, char: str, sim: float):
+        """Сходство принятой реплики с центром — только для порога дрейфа; сам центр не двигается."""
         all_rv = p.get("ru_voice") or {}
-        rv = all_rv.get(char) or {"e": emb.tolist(), "n": 0, "sims": []}
-        n = min(int(rv.get("n") or 0), 60)
-        e = (np.asarray(rv["e"], dtype=np.float32) * (n + 1) + emb) / (n + 2)  # оригинал остаётся якорем с весом 1
-        rv["e"] = (e / (np.linalg.norm(e) + 1e-9)).tolist()
-        rv["n"] = n + 1
+        rv = all_rv.get(char)
+        if not rv:
+            return
         rv["sims"] = (rv.get("sims") or [])[-80:] + [round(float(sim), 3)]
         all_rv[char] = rv
         p.set("ru_voice", all_rv)
@@ -975,10 +992,11 @@ class DubJobs:
         """Озвучить реплики (ids — только эти). fix — переозвучка проблемных по плану контролёра (info["fix"]):
         больше вариантов, другие параметры, старая запись участвует в выборе наравне с новыми.
 
-        Стабильный голос: один отпечаток на персонажа, строгий тембр (sub-talker), и из нескольких вариантов
-        выбирается тот, что ближе к «русскому голосу» персонажа (центр отпечатков ECAPA уже озвученных реплик)
-        и чище звучит по-русски (распознаватель без словаря, pron.py — слышит акцент). Подачу задаёт режиссёр
-        (пунктуация + указание) по оригиналу."""
+        Конвейер v2: у каждого персонажа свой план (voice_plan) — русская речь донорским голосом и обученный
+        тембр у главных, клонирование с записи у эпизодических. Зёрна детерминированы (line_seed): повторная
+        озвучка даёт тот же результат. Из вариантов выбирается ближайший к «русскому голосу» персонажа
+        (фиксированный центр ECAPA после контроля тембра) и чистый по-русски (pron.py — слышит акцент).
+        Подачу задаёт режиссёр (пунктуация + указание) по оригиналу."""
         from . import accel, asr, judge, pron, tts
         accel.require_gpu()
         p, report, s = self.project(gid), self._progress(gid), self.settings(gid)
@@ -991,15 +1009,11 @@ class DubJobs:
             return
         self._release_translator()
         asr.unload()
-        engine = self._engine_for(gid)
         base_cand = CANDIDATES.get(s["quality"], 3)
         use_judge = self._judge_ready(gid)
         info = accel.info()
         inline_asr = use_judge and info["device"] == "cuda" and (info["vram_gb"] or 0) >= 10
-        stable = bool(s.get("stable_voice", True)) and engine in ("ru", "voxcpm")
-        use_ecapa = stable and judge.ecapa_ready()
-        if any((p.get("voice_anchors") or {}).get(l["char"]) for l in lines) and not use_ecapa:
-            raise RuntimeError("Для закреплённого голоса включите стабильность голоса и установите ECAPA")
+        use_ecapa = judge.ecapa_ready()
         use_pron = use_judge and inline_asr and pron.ready()
         take = self._take(gid)
         if not fix and self._director_ready(gid):
@@ -1008,22 +1022,16 @@ class DubJobs:
             if self.cancel_flag.is_set():
                 return
 
-        report("Профили голосов персонажей…")
+        report("Планы голосов персонажей…")
         chars = {l["char"] for l in lines}
-        refs = self._refs_for(p, engine, chars)
-        voices = {c: self._voice(p, c) for c in chars} if s.get("voice_transfer") else {}
+        plans = {c: self.voice_plan(p, c) for c in chars}
         profiles = {}
         if use_judge:
             for c in chars:
                 prof = self.character_profile(p, c)
                 if prof:
                     profiles[c] = judge.speaker_embed([prof["audio"]])
-        report(f"Загрузка модели речи ({engine})…")
-        if engine == "custom":
-            tts.load_custom()
-        elif engine == "ru":
-            tts.load_ru()
-        # Персонажи подряд (своя модель грузится один раз), главные — первыми: если озвучку остановить
+        # Персонажи подряд (модель речи и тембр грузятся один раз), главные — первыми: если озвучку остановить
         # на полпути, в игре уже будут главные герои, а не безымянные группы
         weight = {c["id"]: -(c["lines"] or 0) for c in p.characters()}
         lines.sort(key=lambda l: (weight.get(l["char"], 0), l["char"] or "", l["id"]))
@@ -1044,61 +1052,67 @@ class DubJobs:
             if i:
                 left = (time.time() - started) / i * (len(lines) - i)
                 eta = f", осталось ~{int(left // 60)} мин" if left >= 60 else f", осталось ~{int(left)} с"
-            report(f"{'Доработка' if fix else 'Озвучка'} ({engine}, вариантов: {base_cand}{'+' if fix else ''}): {i}/{len(lines)}{eta}", i, len(lines))
+            report(f"{'Доработка' if fix else 'Озвучка'} (вариантов: {base_cand}{'+' if fix else ''}): {i}/{len(lines)}{eta}", i, len(lines))
             candidates: list[list[tuple[np.ndarray, int]]] = [[] for _ in chunk]
-            plans, texts = [], []
+            plans_fix, texts, refs_used = [], [], []
             t_line = time.time()
             try:
                 for j, l in enumerate(chunk):
+                    plan = plans[l["char"]]
+                    src = plan["source"]
                     li = l["info"] or {}
-                    plan = li.get("fix") if fix else None
-                    deliv = (plan or {}).get("delivery") or li.get("delivery") or {}
+                    fixplan = li.get("fix") if fix else None
+                    deliv = (fixplan or {}).get("delivery") or li.get("delivery") or {}
                     text = deliv.get("text") or l["ru"]
                     if not director_same(text, l["ru"]):
                         text = l["ru"]
-                    plans.append(plan)
+                    plans_fix.append(fixplan)
                     texts.append(text)
                     maxlen = max((l["duration"] or 2) * 2.0, 3.0) + len(l["ru"]) * 0.03
-                    params = {"speaker": refs[l["char"]].get("speaker"), **self._style_params(p, l, engine)}
-                    if stable and engine == "ru":
+                    ref = self.line_ref(p, l, plan)
+                    refs_used.append(ref)
+                    params = {"speaker": ref.get("speaker"), **self._style_params(p, l, src)}
+                    if src == "ru":
                         params["temperature"] = 0.75 + 0.05 * min(3, int(deliv.get("intensity") or 0))
                         params["subtalker_temperature"] = 0.5
-                    if plan:
-                        if plan.get("temperature"):
-                            params["temperature"] = plan["temperature"]
-                        if plan.get("subtalker"):
-                            params["subtalker_temperature"] = plan["subtalker"]
+                    if fixplan:
+                        if fixplan.get("temperature"):
+                            params["temperature"] = fixplan["temperature"]
+                        if fixplan.get("subtalker"):
+                            params["subtalker_temperature"] = fixplan["subtalker"]
                         if deliv.get("temperature"):
                             params["temperature"] = deliv["temperature"]
                     note_t = _parse_note(notes.get(l["char"])).get("temperature")
                     if note_t:
                         params["temperature"] = note_t
-                    ref = self._ref_for_line(p, l, engine, refs[l["char"]], params)
-                    n_cand = base_cand + ((plan or {}).get("extra", FIX_EXTRA) if fix else 0)
-                    if engine in ("ru", "custom") and n_cand > 1:  # все варианты одной пачкой — быстрее по одному
-                        seed = None if not (take or fix) else 100003 * (take + 1) + 7919 * int((plan or {}).get("round") or 1)
-                        candidates[j] += tts.synthesize(engine, [text] * n_cand, [ref] * n_cand, [maxlen] * n_cand, params, seed=seed)
+                    n_cand = base_cand + ((fixplan or {}).get("extra", FIX_EXTRA) if fix else 0)
+                    rnd = int((fixplan or {}).get("round") or 0) if fix else 0
+                    if src in ("ru", "custom") and n_cand > 1:  # все варианты одной пачкой — быстрее по одному; зерно общее
+                        candidates[j] += tts.synthesize(src, [text] * n_cand, [ref] * n_cand, [maxlen] * n_cand, params,
+                                                        seed=line_seed(l["id"], take, 0) + 7919 * rnd)
                     else:
                         for k in range(n_cand):
-                            seed = None if not (k or take or fix) else 100003 * (take + 1) + 977 * k + (7919 if fix else 0)
-                            candidates[j] += tts.synthesize(engine, [text], [ref], [maxlen], params, seed=seed)
+                            candidates[j] += tts.synthesize(src, [text], [ref], [maxlen], params,
+                                                            seed=line_seed(l["id"], take, k) + 7919 * rnd)
             except Exception as e:
                 for l in chunk:
                     p.update_line(l["id"], status="error", error=str(e)[:300])
+                traceback.print_exc()
                 continue
-            for l, cands, plan, text in zip(chunk, candidates, plans, texts):
+            for l, cands, fixplan, text, ref in zip(chunk, candidates, plans_fix, texts, refs_used):
+                plan = plans[l["char"]]
                 orig, orig_sr = audio.read(p.dir / l["orig"])
                 raw = []  # (wav, sr) до подгонки — по ним меряем голос и акцент (без вклеенного оригинала)
                 scored = []  # (fitted, finfo)
-                speedup = (plan or {}).get("max_speedup") or s["max_speedup"]
+                speedup = (fixplan or {}).get("max_speedup") or s["max_speedup"]
                 for wav, sr in cands:
                     wav, sr = self._apply_note(wav, sr, notes.get(l["char"]))
-                    if voices.get(l["char"]):
+                    if plan["timbre"]:
                         try:
-                            wav, sr = tts.convert_timbre(wav, sr, voices[l["char"]],
-                                                         self._rvc_params(p, l["char"], engine, refs[l["char"]]["speaker"]))
+                            wav, sr = tts.convert_timbre(wav, sr, plan["rvc"], {"pitch": plan["pitch"], "auto_pitch": False,
+                                                                                 "index_rate": 0.0, "protect": 0.5})
                         except Exception as e:
-                            print(f"RVC: {e}")
+                            print(f"перенос тембра: {e}")
                     fitted, finfo = self._fit_line(p, l, wav, sr, orig, orig_sr, speedup)
                     raw.append((wav, sr))
                     scored.append((fitted, finfo))
@@ -1141,12 +1155,12 @@ class DubJobs:
                     score = ((jr["score"] if jr else 0) + (30 * cons[k] if cons[k] is not None else 0)
                              - (60 * prons[k]["cer"] if prons[k] else 0))
                     if cons[k] is not None and floor is not None and cons[k] < floor:
-                        score -= 1000  # A good transcript cannot outweigh the wrong voice.
+                        score -= 1000  # хороший текст не перевешивает чужой голос
                     if best is None or score > best_score:
                         best, best_info, best_judge, best_k, best_score = fitted, finfo, jr or {"score": 0}, k, score
                     tmp.unlink(missing_ok=True)
                 if embs is not None and cons[best_k] is not None and best_judge.get("verdict") != "rework":
-                    self._ru_voice_add(p, l["char"], embs[best_k], cons[best_k])
+                    self._ru_voice_note(p, l["char"], cons[best_k])
                 if i < 12 or i % 200 == 0:
                     print(f"озвучка: реплика {i} ({l['char']}, {len(scored)} вар.) за {time.time() - t_line:.1f} с")
                 t_line = time.time()
@@ -1155,17 +1169,18 @@ class DubJobs:
                 ratio = best_info.get("ratio", 1.0)
                 old_info = l["info"] or {}
                 new_info = {"fit": best_info, "flag": "long" if ratio > 1.35 else ("short" if ratio < 0.45 else None),
-                            "engine": engine, "trained": bool(voices.get(l["char"])), "candidates": len(scored),
-                            "voice_identity": refs[l["char"]].get("identity"),
-                            "identity_similarity": cons[best_k], "identity_floor": floor,
+                            "engine": plan["source"], "timbre": plan["timbre"], "candidates": len(scored),
+                            "plan": {"tier": plan["tier"], "source": plan["source"], "donor": (plan["donor"] or {}).get("id"),
+                                     "style": ref.get("style"), "timbre": plan["timbre"]},
+                            "consistency": None if cons[best_k] is None else round(cons[best_k], 3), "consistency_floor": floor,
                             "speech": old_info.get("speech"), "style": self._style_cache.get(l["id"]),
                             "delivery": old_info.get("delivery"), "performance": old_info.get("performance"),
                             "spoken": text if text != l["ru"] else None}
-                if plan:
-                    new_info["fix"] = plan
+                if fixplan:
+                    new_info["fix"] = fixplan
                     new_info["fix_history"] = (old_info.get("fix_history") or [])[-4:] + [
-                        {"round": plan.get("round"), "problems": plan.get("problems"), "score_before": (old_info.get("judge") or {}).get("score")}]
-                if (use_judge or stable) and best_judge.get("verdict"):
+                        {"round": fixplan.get("round"), "problems": fixplan.get("problems"), "score_before": (old_info.get("judge") or {}).get("score")}]
+                if (use_judge or use_ecapa) and best_judge.get("verdict"):
                     new_info["judge"] = best_judge
                 p.update_line(l["id"], gen=str(out.relative_to(p.dir)), gen_duration=round(len(best) / orig_sr, 3),
                               status="generated", info=new_info, error=None)
@@ -1178,7 +1193,7 @@ class DubJobs:
         if use_judge:
             self._do_judge(gid, ids=[l["id"] for l in lines], quick=False, autofix=not fix)
         if ids is None and not fix and s["auto_install"] and not self.cancel_flag.is_set():
-            # Automatic installation only accepts checked recordings without unresolved warnings.
+            # Без прослушивания устанавливаются только проверенные реплики без замечаний
             with p.db() as c:
                 c.execute("""UPDATE lines SET status='approved' WHERE status='generated'
                     AND json_extract(info, '$.judge.verdict') = 'ok'
@@ -1569,35 +1584,35 @@ class DubJobs:
         from . import judge, models
         return judge.VE_WEIGHTS.exists() and models.path("judge-emotion8") is not None
 
-    def _render(self, gid: str, p: Project, char: str, lines: list[dict], engine: str, voice: dict | None,
-                out_dir: Path, seed: int | None = None) -> tuple[list[str], float | None]:
-        """Озвучить реплики в out_dir; вернуть файлы и среднюю похожесть на персонажа."""
+    def _render(self, gid: str, p: Project, char: str, lines: list[dict], out_dir: Path, seed: int | None = None,
+                plan: dict | None = None, timbre: bool = True) -> tuple[list[str], float | None]:
+        """Озвучить реплики персонажа в out_dir по его плану (timbre=False — тот же план без переноса тембра);
+        вернуть файлы и среднюю похожесть на персонажа."""
         from . import judge, tts
+        plan = dict(plan or self.voice_plan(p, char))
+        if not timbre:
+            plan.update(timbre=False, rvc=None)
         prof_long = self.character_profile(p, char)
         profile_emb = judge.speaker_embed([prof_long["audio"]]) if prof_long and judge.VE_WEIGHTS.exists() else None
-        ref = self._refs_for(p, engine, {char}).get(char)
-        if not ref:
-            raise RuntimeError("Не удалось собрать образец голоса персонажа")
-        if engine == "custom":
-            tts.load_custom()
-        elif engine == "ru":
-            tts.load_ru()
+        src = plan["source"]
         outs = []
-        stable = bool(self.settings(gid).get("stable_voice", True)) and engine in ("ru", "voxcpm")
         for l in lines:  # по одной: у каждой реплики своя подача под эмоцию оригинала
-            params = {"speaker": ref.get("speaker"), **self._style_params(p, l, engine)}
+            ref = self.line_ref(p, l, plan)
+            params = {"speaker": ref.get("speaker"), **self._style_params(p, l, src)}
             deliv = (l["info"] or {}).get("delivery") or {}
             text = deliv.get("text") if deliv.get("text") and director_same(deliv["text"], l["ru"]) else l["ru"]
-            if stable and engine == "ru":
+            if src == "ru":
                 params["temperature"] = 0.75 + 0.05 * min(3, int(deliv.get("intensity") or 0))
                 params["subtalker_temperature"] = 0.5
-            outs += tts.synthesize(engine, [text], [self._ref_for_line(p, l, engine, ref, params)],
-                                   [max((l["duration"] or 2) * 2, 3) + len(l["ru"]) * 0.03], params, seed=seed)
+            outs += tts.synthesize(src, [text], [ref], [max((l["duration"] or 2) * 2, 3) + len(l["ru"]) * 0.03], params,
+                                   seed=line_seed(l["id"], 0, 0) if seed is None else seed)
         files, sims = [], []
         note = (p.get("char_notes") or {}).get(char)
         for l, (wav, sr) in zip(lines, outs):
             wav, sr = self._apply_note(wav, sr, note)
-            wav, sr = tts.convert_timbre(wav, sr, voice, self._rvc_params(p, char, engine, ref["speaker"]) if voice else None)
+            if plan["timbre"]:
+                wav, sr = tts.convert_timbre(wav, sr, plan["rvc"], {"pitch": plan["pitch"], "auto_pitch": False,
+                                                                     "index_rate": 0.0, "protect": 0.5})
             orig, osr = audio.read(p.dir / l["orig"])
             fitted, _ = self._fit_line(p, l, wav, sr, orig, osr, self.settings(gid)["max_speedup"])
             f = out_dir / Path(l["orig"]).name
@@ -1607,239 +1622,12 @@ class DubJobs:
                 sims.append(judge.voice_similarity(str(f), profile_emb))
         return files, (round(float(np.mean(sims)), 3) if sims else None)
 
-    # --- обучение голоса персонажа ---
-
-    def _tts_voice(self, p: Project, char: str) -> dict | None:
-        """Дообученная под персонажа модель речи (LoRA-адаптер + образец) или None."""
-        from . import ttsft
-        v = (p.get("tts_voices") or {}).get(char)
-        if not v or v.get("disabled") or not (p.dir / v["ref"]).exists():
-            return None
-        need = "model.safetensors" if v.get("kind") == "full" else ttsft.VOICE_FILE
-        if (p.dir / v["dir"] / need).exists():
-            return {"dir": str(p.dir / v["dir"]), "ref": str(p.dir / v["ref"]), **{k: v[k] for k in v if k not in ("dir", "ref")}}
-        return None
-
-    def _run_child(self, gid: str, job: dict, on_progress) -> dict:
-        """Запустить ruvoice.ttsft отдельным процессом (видеопамять освобождается по завершении), читать прогресс."""
-        import json
-        import os
-        import subprocess
-        import sys
-        from . import power
-        from .paths import DATA_DIR, PROJECT_DIR
-        jf = Path(job["out_dir"]).parent / "job.json"
-        jf.parent.mkdir(parents=True, exist_ok=True)
-        jf.write_text(json.dumps(job, ensure_ascii=False), "utf-8")
-        env = power.env_for_children(dict(os.environ))
-        env["PYTHONUTF8"] = "1"
-        (PROJECT_DIR / "data" / "engines").mkdir(parents=True, exist_ok=True)
-        log = open(PROJECT_DIR / "data" / "engines" / "ttsft.log", "a", encoding="utf-8")
-        exe = str(Path(sys.executable).with_name("python.exe"))
-        self._child = subprocess.Popen([exe, "-m", "ruvoice.ttsft", str(jf)], cwd=str(PROJECT_DIR), stdout=subprocess.PIPE,
-                                       stderr=log, text=True, encoding="utf-8", env=env,
-                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        power.apply_priority(self._child.pid)
-        last = {}
-        for line in self._child.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                info = json.loads(line)
-            except ValueError:
-                continue
-            last = info
-            if info.get("error"):
-                break
-            on_progress(info)
-        self._child.wait()
-        log.close()
-        if self.cancel_flag.is_set():
-            raise RuntimeError("остановлено")
-        if self._child.returncode or last.get("error"):
-            raise RuntimeError(last.get("error") or f"процесс дообучения завершился с кодом {self._child.returncode}")
-        return last
-
-    def _do_train_tts(self, gid: str, char: str, max_seconds: float = 900, epochs: int = 4):
-        """Дообучить модель речи под голос персонажа: нарезка записей → расшифровка (Whisper) → коды речи →
-        LoRA. Результат в voices/<char>/tts (адаптер ~60 МБ + образец)."""
-        import json
-        import shutil
-        from . import asr, models, tts, ttsft
-        p, report = self.project(gid), self._progress(gid)
-        cid, char_name = char, next((c["name"] for c in p.characters() if c["id"] == char), char)
-        if not models.path("tts-ru") or not models.path(ttsft.TOKENIZER_KEY):
-            raise RuntimeError("Для дообучения нужны модель речи и токенайзер речи — «Система и нейросети»")
-        cands = [l for l in p.lines(char=char) if 1.5 <= (l["duration"] or 0) <= 12 and l["status"] != "skipped"]
-        if len(cands) < 8:
-            raise RuntimeError("У персонажа слишком мало реплик для дообучения (нужно хотя бы 8)")
-        report(f"Голос «{char_name}»: подбор записей…")
-        cands = self._most_typical(p, cands[:400])
-        # Контрольные реплики (не участвуют в обучении): по ним потом сверяем дообученный голос с отпечатком
-        holdout = [l for l in cands[8:] if l["ru"] and 2.0 <= (l["duration"] or 0) <= 7][:6]
-        hold_ids = {l["id"] for l in holdout}
-        cands = [l for l in cands if l["id"] not in hold_ids]
-        vdir = p.dir / "voices" / _safe(char)
-        ddir = vdir / "tts_data"
-        shutil.rmtree(ddir, ignore_errors=True)
-        ddir.mkdir(parents=True)
-        items, total = [], 0.0
-        for i, l in enumerate(cands):
-            w, sr = audio.read(p.dir / l["orig"])
-            w = audio.trim_silence(w, sr)
-            if len(w) < sr * 1.0:
-                continue
-            f = ddir / f"{i:04d}.wav"
-            audio.write(f, audio.resample(w, sr, 24000), 24000)
-            items.append({"audio": str(f), "line": l, "sec": len(w) / sr})
-            total += len(w) / sr
-            if total >= max_seconds:
-                break
-        if total < 45:
-            raise RuntimeError("Слишком мало чистой речи персонажа для дообучения (нужно от 45 с)")
-        self._release_translator()
-        tts.unload()
-        need = [it for it in items if not it["line"]["en"]]
-        if need:
-            report(f"Голос «{char_name}»: расшифровка {len(need)} записей…")
-            from . import power
-            texts = asr.transcribe([it["audio"] for it in need], language=None, batch_size=power.batch(8))
-            for it, t in zip(need, texts):
-                it["line"] = {**it["line"], "en": t}
-                if t.strip():
-                    p.update_line(it["line"]["id"], en=t)
-            asr.unload()
-        ref = next((it for it in items if 4 <= it["sec"] <= 9), items[0])
-        ref_path = vdir / "tts_ref.wav"
-        shutil.copy2(ref["audio"], ref_path)
-        rows = [{"audio": it["audio"], "text": (it["line"]["en"] or "").strip(), "ref_audio": str(ref_path)}
-                for it in items if len((it["line"]["en"] or "").strip()) > 3]
-        raw = ddir / "train_raw.jsonl"
-        raw.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", "utf-8")
-        codes = ddir / "train_with_codes.jsonl"
-        report(f"Голос «{char_name}»: коды речи для {len(rows)} записей…")
-        self._run_child(gid, {"op": "codes", "input_jsonl": str(raw), "output_jsonl": str(codes),
-                              "tokenizer_dir": str(models.path(ttsft.TOKENIZER_KEY)), "out_dir": str(vdir / "tts")},
-                        lambda info: None)
-        started = time.time()
-
-        def on_progress(info):
-            if info.get("message"):
-                report(f"Голос «{char_name}»: {info['message']}")
-            elif info.get("step"):
-                st, tot = info["step"], max(1, info.get("steps") or 1)
-                left = (time.time() - started) / st * (tot - st)
-                report(f"Дообучение голоса «{char_name}»: эпоха {info.get('epoch')}/{info.get('total')}, шаг {st}/{tot}, "
-                       f"осталось ~{int(left // 60)} мин · loss {info.get('loss')}", st, tot)
-        setup = self.ft_setup()
-        method = self.settings(gid)["ft_method"]
-        method = setup["method"] if method == "auto" else method
-        if method == "full" and setup["vram"] and setup["vram"] < 14:
-            method = "lora"  # полное дообучение в такую видеопамять не помещается
-        out = vdir / ("tts_full" if method == "full" else "tts")
-        shutil.rmtree(out, ignore_errors=True)
-        from . import judge
-        judge.unload()
-        report(f"Дообучение голоса «{char_name}»: {total / 60:.1f} мин записей, {epochs} эпох…")
-        if method == "full":
-            res = self._run_child(gid, {"op": "train_full", "dataset_jsonl": str(codes), "out_dir": str(out), "epochs": epochs,
-                                        "lr": 1e-5, "base": "tts-ru", "speaker": _safe(char), "accum": setup["accum"],
-                                        "batch": setup["batch"]}, on_progress)
-            final = Path(res["ckpt"])
-            for d in out.glob("checkpoint-epoch-*"):  # промежуточные эпохи — по ~4 ГБ каждая, нужна только последняя
-                if d.resolve() != final.resolve():
-                    shutil.rmtree(d, ignore_errors=True)
-            ttsft.share_tokenizer(final, models.path("tts-ru"))  # общий токенайзер речи — ссылкой, не копией (−0,65 ГБ)
-            entry = {"kind": "full", "dir": str(final.relative_to(p.dir)), "speaker": _safe(char)}
-        else:
-            self._run_child(gid, {"dataset_jsonl": str(codes), "out_dir": str(out), "epochs": epochs, "lr": 1e-4,
-                                  "base": "tts-ru", "rank": 16, "alpha": 32, "accum": 8}, on_progress)
-            entry = {"kind": "lora", "dir": str(out.relative_to(p.dir))}
-        shutil.rmtree(ddir, ignore_errors=True)
-        took = time.time() - started
-        if total and epochs:
-            self._ft_record(took / (total / 60 * epochs) / (0.65 if setup["batch"] > 1 else 1.0), method, setup["batch"])
-        voices = p.get("tts_voices") or {}
-        voices[char] = {**entry, "ref": str(ref_path.relative_to(p.dir)), "epochs": epochs,
-                        "dataset_seconds": round(total), "train_seconds": round(time.time() - started),
-                        "trained_at": time.time(), "holdout": [l["id"] for l in holdout]}
-        p.set("tts_voices", voices)
-        verdict = self._validate_tts_voice(gid, p, char, holdout)
-        self._finish(gid, f"Голос «{char_name}» дообучен за {voices[char]['train_seconds'] // 60} мин{verdict}")
-
-    def _validate_tts_voice(self, gid: str, p: Project, char: str, holdout: list[dict]) -> str:
-        """Контроль по репликам вне обучения: дообученный голос против отпечатка. Если дообученная модель
-        читает хуже (срыв, пропуски слов), она отключается — персонаж озвучивается по отпечатку."""
-        if not holdout:
-            return ""
-        from . import asr, judge, tts
-        report = self._progress(gid)
-        report(f"Голос «{char}»: проверка на контрольных репликах…")
-        voices = p.get("tts_voices") or {}
-        entry = voices.get(char) or {}
-        try:
-            prof = self.character_profile(p, char)
-            pe = judge.speaker_embed([prof["audio"]]) if prof and judge.VE_WEIGHTS.exists() else None
-            out_dir = p.dir / "voices" / _safe(char) / "val"
-            res = {}
-            for tag, use_voice in (("trained", True), ("base", False)):
-                if not use_voice:
-                    entry["disabled"] = True  # временно: _refs_for даст отпечаток
-                    p.set("tts_voices", {**voices, char: entry})
-                files, sim = self._render(gid, p, char, holdout, "ru", None, out_dir / tag)
-                heard = asr.transcribe([str(p.dir / f) for f in files], language="russian")
-                cer = float(np.mean([judge.cer(l["ru"], h) for l, h in zip(holdout, heard)]))
-                res[tag] = {"cer": round(cer, 3), "sim": sim}
-            entry.pop("disabled", None)
-            # высота голоса: дообученная модель не должна уводить персонажа в другой тип голоса
-            pf0 = self.profile_f0(p, char)
-            for tag in ("trained", "base"):
-                f0s = []
-                for f in (out_dir / tag).glob("*.wav"):
-                    w, sr = audio.read(f)
-                    v = audio.f0_median(w, sr)
-                    if v:
-                        f0s.append(v)
-                res[tag]["f0"] = round(float(np.median(f0s))) if f0s else None
-            shift = abs(12 * np.log2(res["trained"]["f0"] / pf0)) if res["trained"].get("f0") and pf0 else 0
-            res["trained"]["f0_shift"] = round(float(shift), 1)
-            # хуже отпечатка — отключаем: срывы текста, уход в другой тип голоса или голос заметно менее похож
-            less_similar = (res["trained"].get("sim") is not None and res["base"].get("sim") is not None
-                            and res["trained"]["sim"] < res["base"]["sim"] - 0.03)
-            bad = (res["trained"]["cer"] > 0.2 and res["trained"]["cer"] > res["base"]["cer"] + 0.1) or shift > 4 or less_similar
-            entry["val"] = res
-            if bad:
-                entry["disabled"] = True
-            voices[char] = entry
-            p.set("tts_voices", voices)
-            asr.unload()
-            tts.unload()
-            note = (f" · контроль: ошибок текста {res['trained']['cer']:.0%} против {res['base']['cer']:.0%} у отпечатка, "
-                    f"похожесть {res['trained']['sim']} против {res['base']['sim']}")
-            if bad:
-                note += (" — дообученная модель увела высоту голоса" if shift > 4 else " — дообученная модель читает хуже") \
-                        + ", персонаж озвучивается по отпечатку"
-            print(f"контроль голоса «{char}»: {res}{' ОТКЛЮЧЕН' if bad else ''}")
-            return note
-        except Exception as e:
-            entry.pop("disabled", None)
-            voices[char] = entry
-            p.set("tts_voices", voices)
-            print(f"контроль голоса «{char}» не удался: {e}")
-            return ""
-
-    def _voice(self, p: Project, char: str) -> dict | None:
-        """Обученный голос персонажа с абсолютными путями или None."""
-        v = (p.get("voices") or {}).get(char)
-        if v and v.get("pth") and (p.dir / v["pth"]).exists():
-            return {"method": "rvc", "pth": str(p.dir / v["pth"]),
-                    "index": str(p.dir / v["index"]) if v.get("index") and (p.dir / v["index"]).exists() else None}
-        return None
+    # --- подготовка ---
 
     def _do_prepare(self, gid: str):
-        """Автоматическая подготовка: реплики → русский текст → отсев неречевых → обучение голосов → пробы."""
-        from . import accel
+        """Автоматическая подготовка: реплики → русский текст → отсев неречевых → кто говорит → обучение тембра
+        главных персонажей → пробы."""
+        from . import accel, asr, engines, timbre, tts
         accel.require_gpu()
         p, report = self.project(gid), self._progress(gid)
         if not p.get("extracted_at") or not p.stats()["total"]:
@@ -1848,44 +1636,31 @@ class DubJobs:
             if self.cancel_flag.is_set():
                 return
             step(gid)
-        from . import accel
         s = self.settings(gid)
-        if s.get("tts_finetune") and not s.get("voice_transfer") and self._engine_for(gid) == "ru":
-            plan = self.train_plan(gid)
-            todo = [c for c in plan["planned"] if not c["trained"]]
-            sample_ids = {c["id"] for c in self._sample_chars(p)}
-            for i, c in enumerate(todo, 1):
-                if self.cancel_flag.is_set():
-                    return
-                report(f"Дообучение голосов: {c['name']} ({i}/{len(todo)}), {plan['total'] - len(todo) + i - 1} уже готовы")
-                try:
-                    self._do_train_tts(gid, c["id"], max_seconds=c["max_seconds"], epochs=c["epochs"])
-                    if c["id"] in sample_ids:  # проба сразу после обучения — слушать, не дожидаясь остальных
-                        self._do_samples(gid, only_char=c["id"])
-                except Exception as e:
+        if timbre.level(s):
+            if not engines.rvc_available():
+                report("Перенос тембра не установлен — главные персонажи пойдут быстрым путём")
+            else:
+                plan = timbre.plan(self, gid)
+                todo = [c for c in plan["planned"] if not c["trained"] and not (timbre.entry(p, c["id"]) or {}).get("val")]
+                sample_ids = {c["id"] for c in self._sample_chars(p)}
+                if todo:
+                    self._release_translator()
+                    asr.unload()
+                    tts.unload()
+                for i, c in enumerate(todo, 1):
                     if self.cancel_flag.is_set():
                         return
-                    print(f"дообучение голоса {c['name']} не удалось: {e}")
-        elif not s.get("voice_transfer"):
-            pass
-        elif rvc_available():
-            plan = self.train_plan(gid)
-            todo = [c for c in plan["planned"] if not c["trained"]]
-            sample_ids = {c["id"] for c in self._sample_chars(p)}
-            for i, c in enumerate(todo, 1):
-                if self.cancel_flag.is_set():
-                    return
-                report(f"Обучение голосов: {c['name']} ({i}/{len(todo)}), {plan['total'] - len(todo) + i - 1} уже готовы")
-                try:
-                    self._do_train_voice(gid, c["id"], steps=c["epochs"], max_seconds=c["max_seconds"], measure=False)
-                    if c["id"] in sample_ids:  # проба сразу после обучения — слушать, не дожидаясь остальных
-                        self._do_samples(gid, only_char=c["id"])
-                except Exception as e:
-                    if self.cancel_flag.is_set():
-                        return
-                    print(f"обучение голоса {c['name']} не удалось: {e}")
-        else:
-            report("RVC не установлен — перенос тембра пропущен")
+                    report(f"Обучение тембра: {c['name']} ({i}/{len(todo)}), ~{c['est_minutes']} мин…")
+                    try:
+                        timbre.train(self, gid, c["id"])
+                        if c["id"] in sample_ids:  # проба сразу после обучения — слушать, не дожидаясь остальных
+                            self._do_samples(gid, only_char=c["id"])
+                    except Exception as e:
+                        if self.cancel_flag.is_set():
+                            return
+                        print(f"обучение тембра {c['name']} не удалось: {e}")
+                        traceback.print_exc()
         if self.cancel_flag.is_set():
             return
         self._do_samples(gid)
@@ -1905,13 +1680,12 @@ class DubJobs:
         return chars[:SAMPLE_CHARS]
 
     def _do_samples(self, gid: str, next_variant: bool = False, only_char: str | None = None):
-        """Пробы: по 3 реплики главных персонажей. next_variant — другой прогон (другие случайные зёрна).
-        only_char — обновить пробу одного персонажа (сразу после его обучения), остальные оставить."""
-        from . import asr, tts
+        """Пробы: по 3 реплики главных персонажей по их планам голоса. next_variant — другой прогон (другие
+        зёрна). only_char — обновить пробу одного персонажа (сразу после обучения тембра), остальные оставить."""
+        from . import asr
         p, report = self.project(gid), self._progress(gid)
         if next_variant:
             p.set("voice_variant", self._take(gid) + 1)
-        engine = self._engine_for(gid)
         take = self._take(gid)
         chars = self._sample_chars(p)
         if only_char:
@@ -1919,7 +1693,8 @@ class DubJobs:
         self._release_translator()
         asr.unload()
         prev = p.get("samples") if only_char else None
-        result = {"engine": engine, "variant": self.variant_info(gid), "at": time.time(), "partial": bool(only_char),
+        variant = self.variant_info(gid)
+        result = {"engine": variant.get("source"), "variant": variant, "at": time.time(), "partial": bool(only_char),
                   "chars": [c for c in (prev or {}).get("chars", []) if c["id"] != only_char] if prev else []}
         for i, c in enumerate(chars, 1):
             if self.cancel_flag.is_set():
@@ -1934,14 +1709,14 @@ class DubJobs:
             step = max(1, len(cands) // SAMPLE_LINES)
             lines = cands[::step][:SAMPLE_LINES]
             try:
-                voice = self._voice(p, c["id"]) if self.settings(gid).get("voice_transfer") else None
-                files, sim = self._render(gid, p, c["id"], lines, engine, voice,
-                                          p.dir / "samples" / _safe(c["id"]), seed=100003 * take if take else None)
+                plan = self.voice_plan(p, c["id"])
+                files, sim = self._render(gid, p, c["id"], lines, p.dir / "samples" / _safe(c["id"]),
+                                          seed=100003 * take if take else None, plan=plan)
             except Exception as e:
                 result["chars"].append({"id": c["id"], "name": c["name"], "error": str(e)[:200], "items": []})
                 continue
-            result["chars"].append({"id": c["id"], "name": c["name"], "similarity": sim,
-                                    "trained": bool(voice) or self._tts_voice(p, c["id"]) is not None,
+            result["chars"].append({"id": c["id"], "name": c["name"], "similarity": sim, "trained": plan["timbre"],
+                                    "source": plan["source"], "reason": plan["reason"],
                                     "items": [{"id": l["id"], "ru": l["ru"], "en": l["en"], "file": f}
                                               for l, f in zip(lines, files)]})
         if only_char:  # сохранить порядок главных персонажей

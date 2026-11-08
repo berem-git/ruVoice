@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import accel, adapters, engines, langmgr, models, tools
+from . import accel, adapters, engines, langmgr, models, timbre, tools
 from .dub import DubJobs
 from .library import Library
 from .project import Project
@@ -740,8 +740,7 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
                         installed_count=p.get("installed_count", 0),
                         extracted=bool(p.get("extracted_at")), last_sample=p.get("last_sample", []),
                         engines=engines.describe(),
-                        voices={**{k: {**v, "method": "rvc"} for k, v in (p.get("voices") or {}).items() if dub._voice(p, k)},
-                                **{k: {**v, "method": "tts"} for k, v in (p.get("tts_voices") or {}).items() if dub._tts_voice(p, k)}},
+                        voices={k: {**v, "trained": timbre.voice(p, k) is not None} for k, v in (p.get("voices") or {}).items()},
                         samples=p.get("samples"), prepared=bool(p.get("prepared_at")),
                         voice_variant=dub.variant_info(gid),
                         # обучение тембра (timbre.plan / timbre.estimate) подключается в задаче 10 плана v2

@@ -7,9 +7,12 @@
 («обучать» / «эпизодический»). Обученная модель принимается только после контроля (calibrate) на
 контрольных репликах, которые в обучение не попали: иначе остаётся «слабой» и не используется."""
 import json
+import math
 import shutil
 import time
 from pathlib import Path
+
+import numpy as np
 
 from .paths import DATA_DIR
 
@@ -218,4 +221,74 @@ def train(jobs, gid: str, char: str) -> dict:
     voices[char] = row
     p.set("voices", voices)
     shutil.rmtree(files[0].parent, ignore_errors=True)
-    return row
+    calibrate(jobs, gid, char, holdout)
+    return (p.get("voices") or {}).get(char) or row
+
+
+# --- контроль обученной модели ---
+
+PRON_TOLERANCE = 0.03      # произношение с тембром может быть хуже донорского не больше чем на столько (CER)
+F0_TOLERANCE = 3.0         # полутонов от обычной высоты голоса персонажа
+
+
+def calibrate(jobs, gid: str, char: str, holdout: list[dict]) -> dict:
+    """Контрольные реплики озвучиваются донором без тембра и с тембром; модель принимается, если тембр сделал
+    голос ближе к персонажу, не испортил произношение и не увёл высоту голоса. Принятая модель даёт
+    фиксированный «русский голос» персонажа (центр ECAPA калибровочных записей) для контролёра."""
+    from . import audio, judge, pron
+    from .dub import _safe
+    p, report = jobs.project(gid), jobs._progress(gid)
+    name = next((c["name"] for c in p.characters() if c["id"] == char), char)
+    voices = p.get("voices") or {}
+    row = dict(voices.get(char) or {})
+    res = {"accept": False, "reason": "", "sim_base": None, "sim_rvc": None, "pron_base": None, "pron_rvc": None,
+           "f0_rvc": None, "f0_shift": None}
+    if not holdout:
+        res["reason"] = "нет контрольных реплик с русским текстом"
+        row.update(val=res, weak=True, reason=res["reason"])
+        voices[char] = row
+        p.set("voices", voices)
+        return res
+    report(f"Тембр «{name}»: контроль на {len(holdout)} репликах…")
+    calib = p.dir / "voices" / _safe(char) / "rvc" / "calib"
+    shutil.rmtree(calib, ignore_errors=True)
+    candidate = {"method": "rvc", "pth": str(p.dir / row["pth"]),
+                 "index": str(p.dir / row["index"]) if row.get("index") and (p.dir / row["index"]).exists() else None}
+    plan = jobs.voice_plan(p, char, rvc=candidate)  # план «как будто модель принята»: донор + тембр
+    files = {}
+    for tag, use in (("base", False), ("rvc", True)):
+        files[tag], sim = jobs._render(gid, p, char, holdout, calib / tag, plan=plan, timbre=use)
+        res[f"sim_{tag}"] = None if sim is None else round(float(sim), 3)
+    if pron.ready():
+        for tag in ("base", "rvc"):
+            checks = pron.check([str(p.dir / f) for f in files[tag]], [l["ru"] for l in holdout])
+            res[f"pron_{tag}"] = round(float(np.mean([c["cer"] for c in checks])), 3)
+        pron.unload()
+    f0s = [v for v in (audio.f0_median(*audio.read(p.dir / f)) for f in files["rvc"]) if v]
+    res["f0_rvc"] = round(float(np.median(f0s))) if f0s else None
+    profile_f0 = float(jobs.profile_f0(p, char) or 0)
+    if res["f0_rvc"] and profile_f0:
+        res["f0_shift"] = round(float(12 * math.log2(res["f0_rvc"] / profile_f0)), 1)
+    problems = []
+    if res["sim_base"] is not None and res["sim_rvc"] is not None and not res["sim_rvc"] > res["sim_base"]:
+        problems.append(f"похожесть не выросла ({res['sim_rvc']} против {res['sim_base']} без тембра)")
+    if res["pron_base"] is not None and res["pron_rvc"] is not None and res["pron_rvc"] > res["pron_base"] + PRON_TOLERANCE:
+        problems.append(f"произношение стало хуже (ошибок {res['pron_rvc']:.0%} против {res['pron_base']:.0%})")
+    if res["f0_shift"] is not None and abs(res["f0_shift"]) > F0_TOLERANCE:
+        problems.append(f"высота голоса ушла на {abs(res['f0_shift']):.0f} полутона от обычной для персонажа")
+    res["accept"] = not problems
+    res["reason"] = "; ".join(problems) if problems else "контроль пройден"
+    row.update(val=res, weak=not res["accept"], reason=res["reason"])
+    voices[char] = row
+    p.set("voices", voices)
+    if res["accept"] and judge.ecapa_ready():
+        E = judge.ecapa_embed([str(p.dir / f) for f in files["rvc"]])
+        centre = E.mean(axis=0)
+        centre = centre / (np.linalg.norm(centre) + 1e-9)
+        sims = sorted(float(e @ centre) for e in E)
+        all_rv = p.get("ru_voice") or {}
+        all_rv[char] = {"e": centre.tolist(), "fixed": True, "floor": round(sims[len(sims) // 2] - judge.DRIFT_MARGIN, 3),
+                        "n": len(sims), "sims": []}
+        p.set("ru_voice", all_rv)
+    print(f"контроль тембра «{name}»: {res}", flush=True)
+    return res

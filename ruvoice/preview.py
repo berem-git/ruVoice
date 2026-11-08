@@ -16,9 +16,9 @@ from . import audio
 def run(jobs, gid: str, count: int = 2, engine: str | None = None,
         ids: list[str] | None = None, label: str | None = None) -> dict:
     from . import asr, judge, tts
-    from .engines import TTS_ENGINES
+    from .engines import BACKENDS
     p = jobs.project(gid)
-    engine = engine or jobs._engine_for(gid)
+    engine = engine or jobs.variant_info(gid)["source"]  # подпись прогона; сам синтез идёт по плану персонажа
     count = max(1, min(6, int(count)))
     label = label or time.strftime("%Y%m%d_%H%M%S")
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", label):
@@ -51,8 +51,7 @@ def run(jobs, gid: str, count: int = 2, engine: str | None = None,
     asr.unload()
     for i, line in enumerate(chosen):
         report(f"Предпросмотр {i + 1}/{len(chosen)}: {line['char']}", i, len(chosen))
-        files, similarity = jobs._render(gid, p, line["char"], [line], engine, None,
-                                         out / str(i + 1), seed=23031 + i)
+        files, similarity = jobs._render(gid, p, line["char"], [line], out / str(i + 1), seed=23031 + i)
         orig = out / str(i + 1) / "original.wav"
         shutil.copy2(p.dir / line["orig"], orig)
         plan = (p.line(line["id"])["info"] or {}).get("performance") or {}
@@ -67,7 +66,7 @@ def run(jobs, gid: str, count: int = 2, engine: str | None = None,
         r.update(heard=text, cer=round(judge.cer(r["ru"], text), 3))
     asr.unload()
     manifest = {"version": 1, "label": label, "game_id": gid, "engine": engine, "created_at": time.time(),
-                "capabilities": TTS_ENGINES[engine].get("capabilities", {}), "installed": False, "rows": rows}
+                "capabilities": BACKENDS.get(engine, {}).get("capabilities", {}), "installed": False, "rows": rows}
     (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), "utf-8")
     _html(out, manifest)
     hist = p.get("previews") or []

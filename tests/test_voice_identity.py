@@ -72,6 +72,7 @@ class IdentityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             identity.propose(self.p, 'voice1', 'gen/one.wav', 'English', 'voxcpm', 'one')
 
+    @unittest.skip("конвейер v2: эталоны заменены донорами и тембром (identity удаляется в задаче 11 плана)")
     def test_approved_anchor_cannot_be_moved_by_new_bad_takes(self):
         row = self.propose()
         identity.activate(self.p, row['id'])
@@ -88,6 +89,7 @@ class IdentityTests(unittest.TestCase):
             np.testing.assert_array_equal(e, a)
         self.assertIsNone(self.p.get('ru_voice'))
 
+    @unittest.skip("конвейер v2: эталоны заменены донорами и тембром (identity удаляется в задаче 11 плана)")
     def test_voxcpm_uses_pin_and_emotion_does_not_change_reference(self):
         row = self.propose()
         identity.activate(self.p, row['id'])
