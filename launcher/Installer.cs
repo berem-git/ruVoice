@@ -11,15 +11,15 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 
 [assembly: System.Reflection.AssemblyTitle("RuVoice Setup")]
-[assembly: System.Reflection.AssemblyVersion("1.1.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.1.0.0")]
+[assembly: System.Reflection.AssemblyVersion("1.1.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.1.1.0")]
 
 static class Installer
 {
-    const string Archive = "RuVoice-1.1.0-Windows-x64.zip";
+    const string Archive = "RuVoice-1.1.1-Windows-x64.zip";
     const string ExpectedHash = "__ARCHIVE_SHA256__";
     const int Parts = __PARTS__;
-    const string DownloadRoot = "https://github.com/berem-git/ruVoice/releases/download/v1.1.0/";
+    const string DownloadRoot = "https://github.com/berem-git/ruVoice/releases/download/v1.1.1/";
 
     [STAThread]
     static int Main(string[] args)
@@ -31,7 +31,7 @@ static class Installer
             catch (Exception e) { File.WriteAllText(args[1] + ".error.txt", e.ToString()); return 1; }
         }
         Application.EnableVisualStyles();
-        var form = new Form { Text = "RuVoice 1.1.0 — установка", Width = 650, Height = 290,
+        var form = new Form { Text = "RuVoice 1.1.1 — установка", Width = 650, Height = 290,
             StartPosition = FormStartPosition.CenterScreen, FormBorderStyle = FormBorderStyle.FixedDialog,
             MaximizeBox = false };
         var text = new Label { Left = 20, Top = 15, Width = 600, Height = 65,
@@ -50,7 +50,7 @@ static class Installer
         Action<string> update = message => form.BeginInvoke((Action)(() => status.Text = message));
         start.Click += async (s, e) => {
             string target = Path.GetFullPath(path.Text);
-            string installed = Path.Combine(target, "RuVoice-1.1.0");
+            string installed = Path.Combine(target, "RuVoice-1.1.1");
             if (Directory.Exists(installed)) { MessageBox.Show("Эта папка уже существует. Выберите другую папку — текущую установку перезаписывать не будем."); return; }
             busy = true; start.Enabled = false; browse.Enabled = false; path.Enabled = false;
             string cache = Path.Combine(Path.GetTempPath(), "RuVoice-setup-" + Guid.NewGuid().ToString("N"));
@@ -67,7 +67,7 @@ static class Installer
                             local = Path.Combine(cache, name);
                             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
                             using (var client = new WebClient()) {
-                                client.Headers[HttpRequestHeader.UserAgent] = "RuVoice-Setup/1.1.0";
+                                client.Headers[HttpRequestHeader.UserAgent] = "RuVoice-Setup/1.1.1";
                                 client.DownloadProgressChanged += (sender, ev) => form.BeginInvoke((Action)(() => {
                                     progress.Value = Math.Max(0, Math.Min(100, ev.ProgressPercentage));
                                     status.Text = "Часть " + i + "/" + Parts + ": " + (ev.BytesReceived / 1048576) + " МиБ";
@@ -119,7 +119,7 @@ static class Installer
             hash = BitConverter.ToString(sha.ComputeHash(input)).Replace("-", "").ToLowerInvariant();
         if (hash != ExpectedHash) throw new InvalidDataException("Контрольная сумма архива не совпала. Скачайте части заново.");
         destination = Path.GetFullPath(destination);
-        if (Directory.Exists(Path.Combine(destination, "RuVoice-1.1.0")))
+        if (Directory.Exists(Path.Combine(destination, "RuVoice-1.1.1")))
             throw new IOException("Папка установки уже существует; выберите другую папку.");
         using (var zip = ZipFile.OpenRead(archive)) {
             string prefix = destination.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
