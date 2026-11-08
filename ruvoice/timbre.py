@@ -27,7 +27,7 @@ HOLDOUT = 6                   # контрольных реплик вне об�
 MIN_DATASET_SEC = 45
 SR = 40000                    # частота обучения RVC (HiFi-GAN f0G40k)
 DISK_GB_PER_VOICE = 0.06
-RVC_SEC_PER_MIN_EPOCH = 6.0   # секунд обучения на минуту записей за эпоху (замеряется в задаче 12 плана)
+RVC_SEC_PER_MIN_EPOCH = 1.8   # секунд обучения на минуту записей за эпоху: RTX 5070 Ti, 8 мин записей — ~14 с/эпоха
 SPEED_FILE = DATA_DIR / "train_speed.json"
 
 
