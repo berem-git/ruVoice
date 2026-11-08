@@ -5,9 +5,12 @@ import os
 from pathlib import Path
 import subprocess
 
+import sys
+
 ROOT = Path(__file__).resolve().parents[1]
-BASE = ROOT / 'dist' / '1.0.0'
-ZIP = BASE / 'RuVoice-1.0.0-Windows-x64.zip'
+VERSION = sys.argv[1] if len(sys.argv) > 1 else '1.1.0'
+BASE = ROOT / 'dist' / VERSION
+ZIP = BASE / f'RuVoice-{VERSION}-Windows-x64.zip'
 CHUNK = 1536 * 1024**2
 
 
@@ -54,7 +57,7 @@ def build(i, hashes):
     source = source.replace('__ARCHIVE_SHA256__', digest(ZIP)).replace('__PARTS__', str(i))
     cs = BASE / 'Installer.generated.cs'
     cs.write_text(source, 'utf-8-sig')
-    exe = BASE / 'RuVoice-1.0.0-Setup.exe'
+    exe = BASE / f'RuVoice-{VERSION}-Setup.exe'
     csc = Path(os.environ['WINDIR']) / 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
     subprocess.run([str(csc), '/nologo', '/target:winexe', '/optimize+', '/codepage:65001',
                     '/win32icon:' + str(ROOT / 'launcher/ruvoice.ico'), '/reference:System.Windows.Forms.dll',
