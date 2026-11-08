@@ -7,6 +7,7 @@ checkpoints/
 tools/*
 !tools/env.ps1
 !tools/qwen3-tts-finetune/
+!tools/make_donors.py
 tools/qwen3-tts-finetune/**/__pycache__/
 RuVoice.exe
 __pycache__/

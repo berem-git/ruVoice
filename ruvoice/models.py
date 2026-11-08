@@ -30,6 +30,8 @@ ALL = {
                  "siriusfreak/qwen3-tts-12hz-1.7b-ru-stress-cf", 4.3, "tts"),
     "tts-custom": _m("Запасная речь: Qwen3-TTS 1.7B CustomVoice (готовые дикторы + инструкция)", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
                      4.3, "tts"),
+    "tts-design": _m("Qwen3-TTS VoiceDesign — голос по описанию (сборка донорского банка, разработчику)",
+                     "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign", 4.3, "tts"),
     "silero-ru": _m("Silero TTS v5.6 — русский диктор (некоммерческая лицензия CC BY-NC)", None, 0.07, "tts",
                     url="https://models.silero.ai/models/tts/ru/v5_6_ru.pt", file="v5_6_ru.pt"),
     "omnivoice": _m("OmniVoice — русский донор и теги смеха/вздохов", "k2-fsa/OmniVoice", 2.5, "tts"),
