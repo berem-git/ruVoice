@@ -380,6 +380,88 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
             raise HTTPException(404, "Нет звука")
         return FileResponse(p.dir / rel, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
+    # --- голоса персонажей: уровень, донор, тембр ---
+
+    @r.get("/projects/{gid:path}/voices")
+    def voices_view(gid: str):
+        """Экран «Голоса»: кто главный, какой донор и тембр у персонажа, 3 самые длинные реплики на прослушивание."""
+        from . import donors, judge
+        p = _project(gid)
+        s = dub.settings(gid)
+        over = p.get("timbre_override") or {}
+        bank = donors.load()
+        assigned = p.get("donors") or {}
+        f0s = p.get("voice_f0") or {}
+        out = []
+        for c in p.characters():
+            entry = timbre.entry(p, c["id"])
+            if timbre.voice(p, c["id"]):
+                state = "trained"
+            elif entry and entry.get("val") is not None:
+                state = "weak"
+            elif entry:
+                state = "training"
+            else:
+                state = "none"
+            d = assigned.get(c["id"])
+            donor = donors.by_id(bank, d["id"]) if d else None
+            f0 = f0s.get(c["id"])
+            samples = sorted((l for l in p.lines(char=c["id"]) if l["orig"]), key=lambda l: -(l["duration"] or 0))[:3]
+            out.append({"id": c["id"], "name": c["name"], "lines": c["lines"] or 0, "seconds": round(c["seconds"] or 0),
+                        "f0": f0, "voice_type": judge.voice_type(f0) if f0 else None,
+                        "tier": timbre.tier(c, s, over.get(c["id"])), "override": over.get(c["id"]),
+                        "donor": {"id": donor["id"], "gender": donor["gender"], "age": donor["age"], "pitch": d.get("pitch", 0),
+                                  "manual": bool(d.get("manual"))} if donor else None,
+                        "timbre": {"state": state, "reason": (entry or {}).get("reason")},
+                        "samples": [l["id"] for l in samples]})
+        return out
+
+    @r.post("/projects/{gid:path}/voices/donor")
+    def voices_donor(gid: str, body: dict):
+        from . import donors
+        p = _project(gid)
+        if dub.current == gid:
+            raise HTTPException(409, "Дождитесь окончания текущей задачи")
+        try:
+            return donors.set_manual(dub, p, str(body.get("char") or ""), str(body.get("donor") or ""))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @r.post("/projects/{gid:path}/voices/tier")
+    def voices_tier(gid: str, body: dict):
+        """Уровень персонажа вручную: train — обучать тембр, episodic — быстрый путь, auto — по правилу."""
+        p = _project(gid)
+        if dub.current == gid:
+            raise HTTPException(409, "Дождитесь окончания текущей задачи")
+        char, tier = str(body.get("char") or ""), str(body.get("tier") or "")
+        if tier not in ("train", "episodic", "auto") or not char:
+            raise HTTPException(400, "Уровень: train, episodic или auto")
+        over = p.get("timbre_override") or {}
+        if tier == "auto":
+            over.pop(char, None)
+        else:
+            over[char] = tier
+        p.set("timbre_override", over)
+        return {"char": char, "override": over.get(char)}
+
+    @r.get("/donors")
+    def donors_list():
+        from . import donors
+        return [{"id": d["id"], "gender": d["gender"], "age": d.get("age"), "f0": d.get("f0"), "styles": list(d["clips"]),
+                 "url": {style: f"/api/donors/audio?id={d['id']}&style={style}" for style in d["clips"]}}
+                for d in donors.load()]
+
+    @r.get("/donors/audio")
+    def donor_audio(id: str, style: str = "calm"):
+        from . import donors
+        donor = donors.by_id(donors.load(), id)
+        if not donor:
+            raise HTTPException(404, "Нет такого донора")
+        path = donors.clip_path(donor, style)
+        if not path.is_file():
+            raise HTTPException(404, "Нет такого клипа")
+        return FileResponse(path, media_type="audio/flac", headers={"Cache-Control": "no-store"})
+
     @r.get("/projects/{gid:path}/enginebench/variants")
     def enginebench_variants(gid: str):
         """Готовые варианты стенда: источники речи (+rvc, если у кого-то обучен тембр) и клонировщики @en."""
@@ -743,13 +825,9 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
                         voices={k: {**v, "trained": timbre.voice(p, k) is not None} for k, v in (p.get("voices") or {}).items()},
                         samples=p.get("samples"), prepared=bool(p.get("prepared_at")),
                         voice_variant=dub.variant_info(gid),
-                        # обучение тембра (timbre.plan / timbre.estimate) подключается в задаче 10 плана v2
-                        train_plan={"planned": [], "trained": 0, "total": 0, "main": 0, "cpu": False,
-                                    "kind": "rvc", "off": True, "skipped": []},
-                        train_levels=None,
+                        train_plan=timbre.plan(dub, gid), timbre=timbre.estimate(dub, gid),
                         bench=p.get("bench") or [], previews=p.get("previews") or [], voice_f0=p.get("voice_f0") or {},
                         review=p.get("review") or {}, char_notes=p.get("char_notes") or {},
-                        voice_anchors=p.get("voice_anchors") or {},
                         selected_chars=(dub.selected(p) and p.get("selected_chars")) or [],
                         last_export=p.get("last_export"), last_import=p.get("last_import"),
                         speaker_proposal=_proposal_view(p.get("speaker_proposal")))

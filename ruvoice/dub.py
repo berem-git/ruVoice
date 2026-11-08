@@ -1866,8 +1866,10 @@ class DubJobs:
         self._release_translator()
         skip = {v["key"] for v in prop["voices"] if v.get("kind") == "recurring" and not v.get("hero")}
         moved = speakers.apply(p, prop, {}, skip)
+        attached = speakers.attach_rest(p, have)  # остатки: явно чужие реплики — к ближайшему голосу
+        p.set("speakers_applied", {**(p.get("speakers_applied") or {}), "attached": attached})
         hero = next((v["name"] for v in prop["voices"] if v.get("hero")), None)
-        print(f"кто говорит: перенесено {moved} реплик, голосов {len(prop['voices']) - len(skip)}"
+        print(f"кто говорит: перенесено {moved} реплик, дораскладка {attached}, голосов {len(prop['voices']) - len(skip)}"
               + (f", главный герой — {hero}" if hero else ""))
         report(f"Кто говорит: реплики разложены по голосам" + (f" (главный герой — {hero})" if hero else ""))
 

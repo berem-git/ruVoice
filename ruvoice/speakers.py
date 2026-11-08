@@ -348,6 +348,42 @@ def name_voices(tr, voices: list[dict], game: str, known: set[str] | None = None
             taken.add(name.lower())
 
 
+ATTACH_MARGIN = 0.08   # лучший голос должен быть ближе второго хотя бы на столько, иначе реплика остаётся
+
+
+def attach_rest(p, have: dict) -> int:
+    """Дораскладка: реплика, далёкая от основного голоса своего персонажа (own < OWN_COS), уходит к персонажу,
+    чей центр ей ближе всего, — если сходство ≥ ATTACH_COS и заметно (на ATTACH_MARGIN) больше, чем со вторым.
+    Реплики без слов не трогаем. Возвращает число перенесённых."""
+    by_id = {l["id"]: l for l in p.lines()}
+    groups: dict[str, list[str]] = {}
+    for i in have:
+        l = by_id.get(i)
+        if l and l["char"] and _speech(l):
+            groups.setdefault(l["char"], []).append(i)
+    keys = [g for g, ids in groups.items() if len(ids) >= 3]
+    if len(keys) < 2:
+        return 0
+    centres = {g: _robust(np.stack([have[i][0] for i in groups[g]])) for g in keys}
+    C = np.stack([centres[g] for g in keys])
+    moves = []
+    for g, ids in groups.items():
+        for i in ids:
+            e = _unit(have[i][0])
+            if g in centres and float(e @ centres[g]) >= OWN_COS:
+                continue
+            sims = C @ e
+            order = np.argsort(-sims)
+            best, second = float(sims[order[0]]), float(sims[order[1]]) if len(order) > 1 else -1.0
+            target = keys[int(order[0])]
+            if target != g and best >= ATTACH_COS and best - second >= ATTACH_MARGIN:
+                moves.append((target, i))
+    if moves:
+        with p.db() as c:
+            c.executemany("UPDATE lines SET char=? WHERE id=?", moves)
+    return len(moves)
+
+
 def apply(p, proposal: dict, names: dict | None = None, skip: set | None = None) -> int:
     """Перенести реплики к найденным голосам. names — правки имён {key: имя}; skip — голоса, которые не трогать.
     Голоса с одинаковым именем сливаются в одного персонажа."""

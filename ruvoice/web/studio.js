@@ -16,7 +16,7 @@ const STEP_NAMES = {
 };
 const QUALITY = { fast: "Быстро — 1 вариант на реплику", normal: "Обычно — 2 варианта, контролёр выбирает лучший",
   thorough: "Тщательно — 4 варианта (в 3–4 раза дольше)" };
-const ENGINE_NAMES = { voxcpm: "VoxCPM2 (голос и подача)", ru: "Qwen3-TTS (русское дообучение)", custom: "Qwen3-TTS CustomVoice" };
+const ENGINE_NAMES = { voxcpm: "VoxCPM2 (клон с записи)", ru: "Qwen-RU (русский донор)", custom: "CustomVoice", silero: "Silero", omnivoice: "OmniVoice" };
 
 const studio = { gid: null, info: null, view: "flow", timer: null, filters: { status: "", char: "", q: "", offset: 0 } };
 const PAGE = 50;
@@ -79,9 +79,9 @@ async function pollStudio() {
       || JSON.stringify(info.samples?.at) !== JSON.stringify(studio.info.samples?.at)
       || info.installed !== studio.info.installed || info.prepared !== studio.info.prepared
       || JSON.stringify(info.review) !== JSON.stringify(studio.info.review)
-      || JSON.stringify(info.voice_anchors) !== JSON.stringify(studio.info.voice_anchors)
       || JSON.stringify(info.previews) !== JSON.stringify(studio.info.previews);
   studio.info = info;
+  if (finished) { voicesCache.rows = null; benchVariants = null; }
   renderJobBar();
   // Не перерисовываем, только пока пользователь печатает в текстовом поле (галочки и списки не в счёт)
   const typing = document.activeElement?.matches("textarea, input[type=text], input[type=search], input:not([type])");
@@ -205,6 +205,7 @@ function renderFlow(body) {
     hardwareCard(info),
     adapterNotes(info.adapter),
     stepPrepare(info, s, busy, stage),
+    voicesPanel(info, busy),
     info.samples ? stepSamples(info, generatedAll, busy, stage === "prepare") : "",
     (generatedAll || stage === "generate" || stage === "judge") ? stepDub(info, s, n, generatedAll, busy, stage) : "",
     reviewPanel(info, busy),
@@ -222,65 +223,60 @@ function card(num, title, text, actions, state) {
 }
 
 function stepPrepare(info, s, busy, stage) {
-  const plan = info.train_plan || { planned: [], trained: 0, total: 0, skipped: [] };
+  const plan = info.train_plan || { planned: [], ready: false, level: "normal", skipped: [] };
   const running = ["prepare", "extract", "transcribe", "translate", "speakers", "train_voice", "samples"].includes(stage);
   if (running) {
     const st = info.status, pct = st.total ? Math.round(st.done / st.total * 100) : null;
     return card(1, "Подготовка идёт", h("div", {},
       h("p", {}, st.message || "Работаем…"),
       pct != null ? h("div", { class: "progress wide" }, h("div", { style: `width:${pct}%` })) : "",
-      h("p", { class: "muted small" }, "Программа достаёт реплики, готовит русский текст, раскладывает реплики по голосам, снимает голоса с записей и делает пробы. ",
+      h("p", { class: "muted small" }, "Программа достаёт реплики, готовит русский текст, раскладывает реплики по голосам, обучает тембр главных персонажей и делает пробы. ",
         "Это долго (десятки минут, для больших игр — часы). Можно свернуть программу; нагрузку на компьютер регулирует переключатель сверху.",
         info.settings?.auto_install ? " Включён режим «без прослушивания»: после подготовки программа сама озвучит всю игру и установит её." : ""),
-      trainLevelPicker(info, true)),
+      timbreLevelPicker(info, true)),
       [h("button", { class: "btn danger", onclick: () => api("POST", projUrl("/cancel")).then(pollStudio) }, "■ Остановить")], "active");
   }
   if (!info.prepared) {
     const text = info.extracted
-      ? `Реплики уже извлечены (${s.total}). Осталось подготовить текст, обучить голоса и сделать пробы.`
-      : "Программа сама достанет реплики из игры, подготовит русский текст, разберётся, кто где говорит, снимет голоса с записей и покажет пробы. Озвучивается всё, у чего есть русские субтитры. В файлы игры ничего не записывается до вашего одобрения.";
-    return card(1, "Подготовка", h("div", {}, h("p", { class: "muted" }, text), trainLevelPicker(info, busy), autoInstallCheck(info)),
+      ? `Реплики уже извлечены (${s.total}). Осталось подготовить текст, обучить тембр главных персонажей и сделать пробы.`
+      : "Программа сама достанет реплики из игры, подготовит русский текст, разберётся, кто где говорит, обучит тембр главных персонажей и покажет пробы. Озвучивается всё, у чего есть русские субтитры. В файлы игры ничего не записывается до вашего одобрения.";
+    return card(1, "Подготовка", h("div", {}, h("p", { class: "muted" }, text), timbreLevelPicker(info, busy), autoInstallCheck(info)),
       [h("button", { class: "btn primary big", disabled: busy || modelsMissing(), title: modelsMissing() ? "Сначала скачайте набор нейросетей (шаг 0)" : "", onclick: () => run("/prepare") }, info.extracted ? "Продолжить подготовку" : "Начать"),
        modelsMissing() && h("span", { class: "muted small" }, "Сначала скачайте нейросети в шаге 0")], "active");
   }
-  const voicesNote = plan.off ? "" : plan.cpu ? "Без видеокарты голоса не дообучаются — берётся отпечаток голоса с записей."
-    : plan.kind === "tts" ? (plan.total ? `Дообучены голоса: ${plan.trained} из ${plan.total} персонажей (у кого от ${Math.round((info.settings?.ft_min_seconds || 150) / 60 * 10) / 10} мин речи); остальные — по отпечатку голоса.` : "")
-    : plan.total ? `Обучены RVC-голоса: ${plan.trained} из ${plan.total} персонажей (${plan.main} главных — полное обучение).` : "";
+  const mains = plan.planned || [];
+  const trained = mains.filter(c => c.trained).length;
+  const voicesNote = !plan.ready ? "Перенос тембра не установлен — все персонажи идут быстрым путём (клонирование с записи)."
+    : mains.length ? `Тембр обучен у ${trained} из ${mains.length} главных персонажей; остальные — быстрым путём.` : "";
   const noSubNote = s.total - s.with_official > 0 ? ` Без русских субтитров ${s.total - s.with_official} — они останутся с оригинальным голосом.` : "";
   return card(1, "Подготовка завершена",
     h("div", {}, h("p", { class: "muted" }, `Реплик: ${s.total}, персонажей: ${info.characters.length}, минут речи: ${Math.round(s.seconds / 60)}. Официальный русский текст у ${s.with_official}.${noSubNote} ${voicesNote}`),
-      trainLevelPicker(info, busy)),
-    [h("button", { class: "btn subtle small", disabled: busy, onclick: () => confirm("Подготовить заново (текст и пробы; обученные голоса останутся)?") && run("/restart") }, "Подготовить заново")], "done");
+      timbreLevelPicker(info, busy)),
+    [h("button", { class: "btn subtle small", disabled: busy, onclick: () => confirm("Подготовить заново (текст и пробы; обученные тембры останутся)?") && run("/restart") }, "Подготовить заново")], "done");
 }
 
-// Сколько дообучать голоса: уровень, время и место на диске для каждого (оценка по этому компьютеру)
-function trainLevelPicker(info, busy) {
-  if (info.train_plan?.kind === "reference") return h("p", { class: "muted small" },
-    `${ENGINE_NAMES[info.voice_variant?.engine] || "Выбранный движок"}: голос берётся из записей персонажа, обучение не требуется.`);
-  const t = info.train_levels;
+// Уровень обучения тембра: сколько главных персонажей, времени и места займёт каждый (оценка по этому компьютеру)
+function timbreLevelPicker(info, busy) {
+  const t = info.timbre;
   if (!t || !t.levels) return "";
-  const cur = info.settings?.ft_level || t.current || "medium";
-  const save = async lvl => {
-    studio.info.settings = await api("POST", projUrl("/settings"), { ft_level: lvl });
-    refreshStudio();
-  };
+  const cur = info.settings?.timbre_level || t.current || "normal";
+  const save = async lvl => { studio.info.settings = await api("POST", projUrl("/settings"), { timbre_level: lvl }); refreshStudio(); };
   const fmtMin = m => m >= 90 ? `~${Math.round(m / 6) / 10} ч` : `~${m} мин`;
   const opt = (key, extra) => {
     const l = t.levels[key];
     if (!l) return "";
-    const what = key === "off" ? "голос по отпечатку с записей, сразу"
+    const what = key === "off" ? "никого не обучать — все персонажи быстрым путём"
       : `${l.chars} гл. персонажей, ${l.todo ? fmtMin(l.minutes) : "уже обучены"}, ~${l.disk_gb} ГБ на диске`;
-    return h("label", { class: "radio", title: key === "off" ? "" : `≈ ${l.per_char} мин на персонажа: ${(l.names || []).join(", ")}` },
-      h("input", { type: "radio", name: "ft_level", checked: cur === key, disabled: busy, onchange: () => save(key) }),
+    return h("label", { class: "radio", title: (l.names || []).join(", ") },
+      h("input", { type: "radio", name: "timbre_level", checked: cur === key, disabled: busy, onchange: () => save(key) }),
       h("span", {}, h("b", {}, l.name), ` — ${what}`, extra ? h("span", { class: "muted small" }, extra) : ""));
   };
-  const need = cur !== "off" && (t.levels[cur]?.todo || 0) > 0 && info.prepared;
-  const how = t.method === "full" ? `полное дообучение${t.batch > 1 ? " парами (большая видеокарта — быстрее)" : ""}`
-    : "лёгкое дообучение (LoRA): для полного нужно 14 ГБ видеопамяти";
+  const need = cur !== "off" && (t.levels[cur]?.todo || 0) > 0 && info.prepared && t.ready;
   return h("div", { class: "train-levels" },
-    h("div", { class: "small" }, h("b", {}, "Обучение голосов персонажей"), h("span", { class: "muted" }, ` · ${how}`)),
-    opt("off"), opt("light"), opt("medium", " · рекомендуем"), opt("deep", " · если «среднее» нравится не до конца"),
-    h("p", { class: "muted small" }, "Голос главных персонажей дополнительно обучается на их записях. Обученный голос проверяется на репликах, которые в обучение не попали: если он читает хуже, уходит в другой тип голоса или меньше похож на персонажа — используется голос по отпечатку, хуже не станет. Время — оценка по этой видеокарте."),
+    h("div", { class: "small" }, h("b", {}, "Тембр главных персонажей"),
+      h("span", { class: "muted" }, t.ready ? " · перенос тембра установлен" : " · перенос тембра не установлен (⋯ → Система и ускорение → Среды движков)")),
+    opt("off"), opt("fast"), opt("normal", " · рекомендуем"), opt("deep", " · если «обычно» нравится не до конца"),
+    h("p", { class: "muted small" }, "Главный персонаж — от 2 минут речи и 12 реплик (уровень можно поменять вручную на панели «Голоса»). Тембр обучается на его записях и проверяется на репликах вне обучения: если голос не стал ближе к персонажу, читает хуже или ушёл по высоте — модель не используется, персонаж идёт быстрым путём. Время — оценка по этой видеокарте."),
     need ? h("button", { class: "btn small", disabled: busy, onclick: () => run("/prepare") }, `Обучить сейчас (${fmtMin(t.levels[cur].minutes)})`) : "");
 }
 
@@ -300,7 +296,7 @@ function stepSamples(info, generatedAll, busy, preparing) {
   const note = preparing ? h("p", { class: "muted small" }, "Подготовка ещё идёт: пробы появляются по мере обучения персонажей, уже готовые можно слушать.") : "";
   const blocks = (sm.chars || []).map(c => h("div", { class: "sample-char" },
     h("div", { class: "sample-head" }, h("b", {}, c.name),
-      c.trained ? h("span", { class: "pill ok" }, "голос обучен") : h("span", { class: "pill" }, "без обучения"),
+      c.trained ? h("span", { class: "pill ok" }, "тембр обучен") : h("span", { class: "pill", title: c.reason || "" }, c.source ? `быстрый путь · ${c.source}` : "быстрый путь"),
       c.similarity != null && h("span", { class: "muted small" }, `похожесть ${c.similarity.toFixed(2)}`),
       c.error && h("span", { class: "error" }, c.error)),
     (c.items || []).map(it => h("div", { class: "sample-row" },
@@ -309,7 +305,7 @@ function stepSamples(info, generatedAll, busy, preparing) {
   return card(2, "Послушайте персонажей", h("div", {},
     note,
     h("p", { class: "muted" },
-      "Слева оригинал, справа русский вариант: голос снят с записей персонажа, образец под эмоцию оригинала. Если нравится — озвучим всю игру. Если нет — переделайте пробы (другой прогон) или начните заново."),
+      "Слева оригинал, справа русский вариант: у главных персонажей — донорский русский голос с обученным тембром, у эпизодических — клон с записи. Если нравится — озвучим всю игру. Если нет — переделайте пробы (другой прогон), смените донора на панели «Голоса» или начните заново."),
     h("div", { class: "samples" }, blocks)),
     preparing || (info.settings?.auto_install && (info.status.running || info.status.queued.length)) ? []
       : decided ? [h("span", { class: "muted small" }, "Игра уже озвучена этим способом.")]
@@ -554,19 +550,18 @@ function settingsPanel(info) {
     h("summary", {}, "⚙ Настройки"),
     h("div", { class: "settings" },
       h("h3", {}, "Голос и исходное исполнение"),
-      h("p", { class: "callout warn" }, "Качество речи пока экспериментальное: возможны сильный акцент, неверные ударения и смена тембра между репликами. Фиксация голоса не устраняет эти проблемы гарантированно. Сначала послушайте пробы."),
-      h("p", { class: "muted small" }, "В списке реплик можно закрепить понравившийся русский голос. Эталон хранится на диске и не меняется при генерации. Сначала проверьте произношение и говорящего на слух."),
-      Object.entries(info.voice_anchors || {}).map(([char]) => h("div", { class: "row" },
-        h("span", {}, `📌 ${info.characters.find(c => c.id === char)?.name || char}: голос закреплён`),
-        h("button", { class: "btn subtle", disabled: !!info.status?.running, onclick: async () => {
-          await api("POST", projUrl("/voice-identities"), { clear: true, char }); refreshStudio();
-        } }, "Снять эталон"))),
+      h("p", { class: "muted small" }, "Произношение рождается от русского донора, тембр персонажа переносит обученная модель; кто какой голос получает — на панели «Голоса». Какой движок звучит лучше — покажет стенд движков."),
+      sel("speech_source", [["auto", "Источник русской речи: автоматически"], ["ru", "Qwen-RU — русский донор по образцу"],
+          ["custom", "CustomVoice — готовый диктор с инструкцией"], ["silero", "Silero — русские дикторы (некоммерческая лицензия)"],
+          ["omnivoice", "OmniVoice — донор, теги смеха и вздохов"]]),
+      sel("clone_engine", [["auto", "Быстрый путь эпизодических: автоматически"], ["ru", "Qwen-RU — клон с английской записи"],
+          ["voxcpm", "VoxCPM2 — клон с английской записи"], ["omnivoice", "OmniVoice — клон с английской записи"]]),
+      sel("episodic_mode", [["clone", "Эпизодические: клонировать с записи (ближе тембр, возможен акцент)"],
+          ["donor", "Эпизодические: донорский русский голос без акцента (тембр чужой)"]]),
       h("button", { class: "btn primary", onclick: () => run("/preview", { count: 2 }) }, "Создать две пробы без установки"),
       (info.previews || []).slice(-3).reverse().map(p => h("p", {}, h("a", {
         href: `/api/projects/${encodeURIComponent(studio.gid)}/preview?label=${encodeURIComponent(p.label)}`,
         target: "_blank", rel: "noopener" }, `Послушать ${p.count} пробы · ${p.engine} · ${p.label}`))),
-      sel("speech_engine", [["auto", "Автоматически"], ["voxcpm", "VoxCPM2 — голос и управляемая подача"],
-          ["ru", "Qwen-RU — русское произношение"], ["custom", "CustomVoice — готовый диктор"]]),
       sel("effects_mode", [["unknown", "Акустика не определена — проверить"], ["engine", "Эхо и окружение добавляет игра"],
           ["dry", "Чистые записи без эффектов"], ["baked", "Эффекты записаны в файле — нужен импульс/отдельная дорожка"]]),
       h("label", { class: "radio" }, h("input", { type: "checkbox", checked: s.preserve_performance !== false,
@@ -625,6 +620,49 @@ function settingsPanel(info) {
         } }, "✕ Удалить проект озвучки (переводы и голоса; игра не трогается)"))));
 }
 
+// ---------- голоса персонажей ----------
+
+// Уровень (обучать тембр / быстрый путь), донор русской речи, состояние тембра, прослушивание оригинала и донора
+let voicesCache = { gid: null, rows: null, donors: null };
+const TIMBRE_STATE = { trained: ["ok", "тембр обучен"], weak: ["warn", "модель не принята"], training: ["", "ждёт контроля"], none: ["", "не обучен"] };
+function voicesPanel(info, busy) {
+  if (!(info.characters || []).length) return "";
+  const box = h("details", { class: "panel" }, h("summary", {}, `Голоса — персонажей: ${info.characters.length}`),
+    h("p", { class: "muted small" }, "Главные персонажи получают обученный тембр поверх донорского русского голоса (без акцента), эпизодические — быстрый путь. Донора и уровень можно поменять; изменения действуют на следующую озвучку."),
+    h("div", { class: "voices-list" }, h("span", { class: "muted small" }, "Загрузка…")));
+  const reload = async () => { voicesCache.rows = null; await refreshStudio(); };
+  const fill = (rows, donors) => {
+    const list = box.querySelector(".voices-list");
+    const donorOpt = (row, d) => h("option", { value: d.id, selected: row.donor?.id === d.id },
+      `${d.id} · ${d.gender === "male" ? "муж." : "жен."} ${d.age || ""} ${Math.round(d.f0 || 0)} Гц`);
+    list.replaceChildren(h("table", { class: "chars voices" },
+      h("thead", {}, h("tr", {}, h("th", {}, "Персонаж"), h("th", { class: "num" }, "Реплик"), h("th", {}, "Голос"), h("th", {}, "Уровень"), h("th", {}, "Донор"), h("th", {}, "Тембр"), h("th", {}, "Послушать"))),
+      h("tbody", {}, rows.map(r => {
+        const [cls, label] = TIMBRE_STATE[r.timbre?.state] || ["", r.timbre?.state];
+        return h("tr", {},
+          h("td", {}, h("b", {}, r.name)),
+          h("td", { class: "num" }, `${r.lines} · ${Math.round(r.seconds / 60)} мин`),
+          h("td", {}, r.voice_type || "—"),
+          h("td", {}, h("select", { disabled: busy, onchange: async e => { await api("POST", projUrl("/voices/tier"), { char: r.id, tier: e.target.value }).catch(x => alert(x.message)); reload(); } },
+            h("option", { value: "auto", selected: !r.override }, r.tier === "main" ? "главный (авто)" : "эпизодический (авто)"),
+            h("option", { value: "train", selected: r.override === "train" }, "обучать тембр"),
+            h("option", { value: "episodic", selected: r.override === "episodic" }, "быстрый путь"))),
+          h("td", {}, r.tier === "main" || r.donor
+            ? h("select", { disabled: busy, onchange: async e => { await api("POST", projUrl("/voices/donor"), { char: r.id, donor: e.target.value }).catch(x => alert(x.message)); reload(); } },
+                !r.donor && h("option", { value: "", selected: true }, "— подберётся сам —"), donors.map(d => donorOpt(r, d)))
+            : h("span", { class: "muted small" }, "клон с записи")),
+          h("td", {}, h("span", { class: `pill ${cls}`, title: r.timbre?.reason || "" }, label)),
+          h("td", {}, h("div", { class: "row" }, r.samples.slice(0, 2).map((id, i) => playBtn("orig", id, `Оригинал ${i + 1}`)),
+            r.donor && h("button", { class: "btn play gen", onclick: e => playUrl(e.currentTarget, `/api/donors/audio?id=${encodeURIComponent(r.donor.id)}&style=calm&t=${Date.now()}`) }, "▶ Донор"))));
+      }))));
+  };
+  if (voicesCache.gid === studio.gid && voicesCache.rows && voicesCache.donors) fill(voicesCache.rows, voicesCache.donors);
+  else Promise.all([api("GET", projUrl("/voices")), voicesCache.donors ? Promise.resolve(voicesCache.donors) : api("GET", "/api/donors")])
+    .then(([rows, donors]) => { voicesCache = { gid: studio.gid, rows, donors }; fill(rows, donors); })
+    .catch(e => box.querySelector(".voices-list").replaceChildren(h("span", { class: "error" }, e.message)));
+  return box;
+}
+
 // ---------- прослушивание ----------
 
 function lineCard(l) {
@@ -649,6 +687,8 @@ function lineCard(l) {
       h("span", { class: `lstatus st-${l.status}` }, LINE_STATUS[l.status] || l.status),
       l.ru_source === "official" && h("span", { class: "tag" }, "официальный текст"),
       l.ru_source === "user" && h("span", { class: "tag" }, "изменено вами"),
+      l.info?.plan && h("span", { class: "tag", title: `источник ${l.info.plan.source}${l.info.plan.donor ? ", донор " + l.info.plan.donor : ""}` },
+        l.info.plan.timbre ? "донор + тембр" : (l.info.plan.donor ? "донор" : "клон с записи")),
       judgeChip(l.info?.judge),
     (l.info?.fit?.kept || []).length ? h("span", { class: "muted small", title: "Взято из оригинала и вклеено в русскую реплику" }, ` · из оригинала: ${l.info.fit.kept.join(", ")}`) : ""),
     h("div", { class: "line-grid" },
@@ -658,16 +698,6 @@ function lineCard(l) {
         ta,
         h("div", { class: "row" },
           l.gen && playBtn("gen", l.id, "Русский"),
-          l.orig && l.ru && h("button", { class: "btn", disabled: !!studio.info?.status?.running,
-            title: "Русские эталоны и три контрольные фразы без установки в игру",
-            onclick: () => api("POST", projUrl("/voice-trials"), { ids: [l.id] }).then(pollStudio).catch(e => alert(e.message))
-          }, "Пробы постоянного голоса"),
-          l.gen && h("button", { class: "btn", disabled: !!studio.info?.status?.running,
-            title: "Выберите запись с естественным русским произношением и подходящим голосом",
-            onclick: async () => {
-              await api("POST", projUrl("/voice-identities"), { line: l.id }).catch(e => alert(e.message));
-              refreshStudio();
-            } }, "📌 Закрепить голос"),
           l.gen && l.status !== "approved" && h("button", { class: "btn ok", onclick: () => setStatus("approved") }, "✓ Одобрить"),
           l.gen && l.status !== "rejected" && h("button", { class: "btn danger", onclick: () => setStatus("rejected") }, "✗ Плохо"),
           l.ru && h("button", { class: "btn", onclick: () => api("POST", projUrl("/regenerate"), { ids: [l.id] }).then(pollStudio) }, l.gen ? "⟳ Заново" : "🎙 Озвучить"),
