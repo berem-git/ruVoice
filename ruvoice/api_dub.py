@@ -634,6 +634,22 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
         dub.cancel(gid)
         return dub.status(gid)
 
+    @r.post("/projects/{gid:path}/pause")
+    def pause(gid: str):
+        dub.pause(gid)
+        return dub.status(gid)
+
+    @r.post("/projects/{gid:path}/resume")
+    def resume(gid: str):
+        dub.resume(gid)
+        return dub.status(gid)
+
+    @r.post("/projects/{gid:path}/stop-delete")
+    def stop_delete(gid: str):
+        """Остановить озвучку и удалить реплики, озвученные в этом запуске."""
+        dub.stop_delete(gid)
+        return dub.status(gid)
+
     @r.post("/projects/{gid:path}/settings")
     def settings(gid: str, body: dict):
         _project(gid)

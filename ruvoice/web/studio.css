@@ -183,3 +183,6 @@ table.voices .row { margin-top: 0; }
 .bench-variants { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin: 8px 0; }
 label.radio.inline { display: inline-flex; margin: 0; }
 .bench-run { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+
+.job.paused { border-color: #f5c04255; }
+.pause-mark { font-size: 18px; margin-right: 10px; color: #f5c042; }

@@ -74,7 +74,7 @@ async function pollStudio() {
   const st = info.status, old = studio.info?.status;
   const finished = old && (old.running || old.queued.length) && !st.running && !st.queued.length;
   const changed = studio.view === "lines" ? finished
-    : !old || st.running !== old.running || st.task !== old.task || st.queued.length !== old.queued.length
+    : !old || st.running !== old.running || st.task !== old.task || st.queued.length !== old.queued.length || st.paused !== old.paused
       || st.message !== old.message || JSON.stringify(info.stats) !== JSON.stringify(studio.info.stats)
       || JSON.stringify(info.samples?.at) !== JSON.stringify(studio.info.samples?.at)
       || info.installed !== studio.info.installed || info.prepared !== studio.info.prepared
@@ -144,6 +144,20 @@ function powerControl() {
       Object.entries(p.levels).map(([k, v]) => h("option", { value: k, selected: p.level === k, title: v.desc }, v.name))));
 }
 
+// Задачи озвучки: остановка удаляет то, что озвучено в этом запуске (ранее готовое остаётся)
+const DUB_TASKS = ["generate", "judge", "redirect", "samples", "events_pass"];
+function jobButtons(st) {
+  const dubbing = DUB_TASKS.includes(st.task);
+  const pauseBtn = st.paused
+    ? h("button", { class: "btn", title: "Продолжить с места остановки", onclick: () => api("POST", projUrl("/resume")).then(pollStudio) }, "▶ Продолжить")
+    : h("button", { class: "btn", title: "Замереть на ближайшей реплике; модели остаются в памяти", onclick: () => api("POST", projUrl("/pause")).then(pollStudio) }, "⏸ Пауза");
+  const stopBtn = dubbing
+    ? h("button", { class: "btn danger", title: "Остановить и вернуть реплики этого запуска в «ждут озвучки»; озвученное раньше и одобренное остаётся",
+        onclick: () => confirm("Остановить озвучку и удалить реплики, озвученные в этом запуске? Озвученное раньше и одобренное останется.") && api("POST", projUrl("/stop-delete")).then(pollStudio) }, "■ Остановить и удалить озвучку")
+    : h("button", { class: "btn danger", onclick: () => api("POST", projUrl("/cancel")).then(pollStudio) }, "■ Стоп");
+  return [pauseBtn, stopBtn];
+}
+
 function renderJobBar() {
   const bar = document.getElementById("jobbar");
   if (!bar || !studio.info) return;
@@ -151,13 +165,13 @@ function renderJobBar() {
   const busy = Boolean(st.running || st.queued.length);
   const pct = st.total ? Math.round(st.done / st.total * 100) : null;
   bar.replaceChildren(
-    busy ? h("div", { class: "job" },
-      h("span", { class: "spinner" }),
+    busy ? h("div", { class: `job ${st.paused ? "paused" : ""}` },
+      st.paused ? h("span", { class: "pause-mark" }, "⏸") : h("span", { class: "spinner" }),
       h("div", { class: "job-text" },
-        h("div", {}, STEP_NAMES[st.task] || "В очереди"),
+        h("div", {}, (STEP_NAMES[st.task] || "В очереди") + (st.paused ? " — пауза" : "")),
         h("div", { class: "muted small" }, st.message)),
       pct != null && h("div", { class: "progress" }, h("div", { style: `width:${pct}%` })),
-      h("button", { class: "btn danger", onclick: () => api("POST", projUrl("/cancel")) }, "■ Стоп"))
+      ...(st.running ? jobButtons(st) : [h("button", { class: "btn danger", onclick: () => api("POST", projUrl("/cancel")).then(pollStudio) }, "■ Убрать из очереди")]))
     : st.error ? h("div", { class: "job error" }, "⚠ ", st.error)
     : st.message ? h("div", { class: "job muted" }, "✓ ", st.message) : "");
 }
@@ -234,7 +248,7 @@ function stepPrepare(info, s, busy, stage) {
         "Это долго (десятки минут, для больших игр — часы). Можно свернуть программу; нагрузку на компьютер регулирует переключатель сверху.",
         info.settings?.auto_install ? " Включён режим «без прослушивания»: после подготовки программа сама озвучит всю игру и установит её." : ""),
       timbreLevelPicker(info, true)),
-      [h("button", { class: "btn danger", onclick: () => api("POST", projUrl("/cancel")).then(pollStudio) }, "■ Остановить")], "active");
+      jobButtons(info.status), "active");
   }
   if (!info.prepared) {
     const text = info.extracted
@@ -354,8 +368,8 @@ function stepDub(info, s, n, generatedAll, busy, stage) {
     return card(3, stage === "generate" ? "Озвучка всей игры" : "Контролёр проверяет озвучку", h("div", {},
       h("p", {}, st.message),
       pct != null ? h("div", { class: "progress wide" }, h("div", { style: `width:${pct}%` })) : "",
-      h("p", { class: "muted small" }, "Можно остановить и продолжить позже — готовые реплики сохраняются.")),
-      [h("button", { class: "btn danger", onclick: () => api("POST", projUrl("/cancel")).then(pollStudio) }, "■ Остановить")], "active");
+      h("p", { class: "muted small" }, "«Пауза» замирает на ближайшей реплике и продолжает с того же места. «Остановить и удалить озвучку» возвращает реплики этого запуска в «ждут озвучки»; озвученное раньше и одобренное остаётся.")),
+      jobButtons(info.status), "active");
   }
   const left = n("translated");
   const text = `Озвучено ${generatedAll} из ${s.total - n("skipped")} реплик.` +

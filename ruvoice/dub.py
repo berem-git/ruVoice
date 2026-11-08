@@ -81,6 +81,7 @@ class DubJobs:
         self.q: queue.Queue = queue.Queue()
         self.state: dict[str, dict] = {}   # game_id → {task, message, done, total, error, queued}
         self.cancel_flag = threading.Event()
+        self.pause_flag = threading.Event()
         self.current: str | None = None
         self._projects: dict[str, Project] = {}
         self._translator = None
@@ -218,9 +219,72 @@ class DubJobs:
         st["error"] = None
         self.q.put((gid, task, kw))
 
+    # --- пауза, остановка, «остановить и удалить озвучку» ---
+
+    def _pause_flag(self) -> threading.Event:
+        flag = getattr(self, "pause_flag", None)
+        if flag is None:
+            flag = self.pause_flag = threading.Event()
+        return flag
+
+    def pause(self, gid: str):
+        """Пауза текущей задачи этого проекта: цикл замирает на ближайшей контрольной точке."""
+        if self.current == gid:
+            self._pause_flag().set()
+            self.state.setdefault(gid, {})["paused"] = True
+
+    def resume(self, gid: str):
+        self._pause_flag().clear()
+        if gid in self.state:
+            self.state[gid]["paused"] = False
+
+    def _checkpoint(self) -> bool:
+        """Контрольная точка длинного цикла: на паузе ждёт, при отмене возвращает True (цикл выходит)."""
+        flag = self._pause_flag()
+        while flag.is_set() and not self.cancel_flag.is_set():
+            time.sleep(0.2)
+        if self.cancel_flag.is_set():
+            flag.clear()
+            if self.current in self.state:
+                self.state[self.current]["paused"] = False
+            return True
+        return False
+
+    def stop_delete(self, gid: str):
+        """Остановить озвучку и удалить то, что озвучено в этом запуске (ранее готовое не трогается)."""
+        if self.current == gid and gid in self.state:
+            self.state[gid]["purge"] = True
+        self.cancel(gid)
+
+    def _purge_run(self, gid: str) -> int:
+        """После остановки с флагом purge: реплики этого запуска — обратно в «ждут озвучки», файлы удалить."""
+        st = self.state.get(gid)
+        if not st:
+            return 0
+        ids = list(st.get("produced") or [])
+        st["produced"] = []
+        if not st.pop("purge", False) or not ids:
+            return 0
+        p = self.project(gid)
+        n = 0
+        for l in p.lines(ids=ids):
+            if l["gen"]:
+                try:
+                    (p.dir / l["gen"]).unlink(missing_ok=True)
+                except OSError as e:
+                    print(f"удаление {l['gen']}: {e}")
+            status = "translated" if l["status"] in ("generated", "approved", "rejected", "error") else l["status"]
+            p.update_line(l["id"], gen=None, gen_duration=None, status=status, error=None)
+            n += 1
+        st["message"] = f"Остановлено, озвучка этого запуска удалена ({n} реплик)"
+        return n
+
     def cancel(self, gid: str):
         if self.current == gid:
             self.cancel_flag.set()
+            self._pause_flag().clear()
+            if gid in self.state:
+                self.state[gid]["paused"] = False
             # Не ждать конца долгого шага: убить процесс RVC (обучение) и переводчика —
             # текущая операция завершится ошибкой «остановлено», а уже готовые результаты сохранены
             from .engines import client
@@ -244,7 +308,7 @@ class DubJobs:
     def status(self, gid: str) -> dict:
         st = self.state.get(gid) or {"task": None, "message": "", "done": 0, "total": 0, "error": None,
                                      "queued": []}
-        return {**st, "running": self.current == gid}
+        return {**st, "running": self.current == gid, "paused": bool(st.get("paused")) and self.current == gid}
 
     # --- поток ---
 
@@ -255,7 +319,9 @@ class DubJobs:
             if task in st["queued"]:
                 st["queued"].remove(task)
             self.current, st["task"], st["done"], st["total"] = gid, task, 0, 0
+            st["produced"], st["purge"], st["paused"] = [], False, False
             self.cancel_flag.clear()
+            self._pause_flag().clear()
             self._mark_job(gid, task, kw)
             try:
                 from . import power
@@ -264,7 +330,7 @@ class DubJobs:
                 if st.get("message") in ("", None) or st["task"] == task and not st.get("_keep_message"):
                     st["message"] = "Остановлено" if self.cancel_flag.is_set() else st.get("message") or "Готово"
             except Exception as e:
-                if self.cancel_flag.is_set():
+                if self._checkpoint():
                     st["error"] = None
                     st["message"] = "Остановлено"
                 else:
@@ -272,6 +338,12 @@ class DubJobs:
                     st["message"] = "Ошибка"
                     traceback.print_exc()
             finally:
+                if st.get("purge"):
+                    try:
+                        self._purge_run(gid)
+                    except Exception as e:
+                        print(f"удаление озвучки запуска: {e}")
+                        traceback.print_exc()
                 st.pop("_keep_message", None)
                 st["task"] = None
                 self.current = None
@@ -646,7 +718,7 @@ class DubJobs:
             tts.unload()
             from . import power
             for i in range(0, len(need), 16):
-                if self.cancel_flag.is_set():
+                if self._checkpoint():
                     return
                 chunk = need[i:i + 16]
                 report(f"Субтитры: слушаю английскую речь {i}/{len(need)}", i, len(need))
@@ -688,7 +760,7 @@ class DubJobs:
         from . import power
         report("Загрузка модели распознавания речи…")
         for i in range(0, len(todo), 16):
-            if self.cancel_flag.is_set():
+            if self._checkpoint():
                 return
             chunk = todo[i:i + 16]
             report(f"Распознавание речи: {i}/{len(todo)}", i, len(todo))
@@ -752,7 +824,7 @@ class DubJobs:
         ru_now = {l["id"]: l["ru"] for l in order if l["ru"]}
         need_llm.sort(key=lambda l: l["id"])
         for i in range(0, len(need_llm), TR_BATCH):
-            if self.cancel_flag.is_set():
+            if self._checkpoint():
                 return
             chunk = need_llm[i:i + TR_BATCH]
             report(f"Перевод: {i}/{len(need_llm)}", i, len(need_llm))
@@ -791,7 +863,7 @@ class DubJobs:
             random.Random(7).shuffle(lines)
             items.append({"name": names.get(c, c), "key": c, "lines": [l["en"] for l in lines[:12]]})
         for i in range(0, len(items), 8):
-            if self.cancel_flag.is_set():
+            if self._checkpoint():
                 return cards
             got = tr.describe_characters(items[i:i + 8], p.get("game_name", ""))
             for it in items[i:i + 8]:
@@ -813,7 +885,7 @@ class DubJobs:
         from . import power
         report("Проверка: где речь, а где смех и крики…")
         for i in range(0, len(lines), 16):
-            if self.cancel_flag.is_set():
+            if self._checkpoint():
                 return
             chunk = lines[i:i + 16]
             report(f"Отсев неречевых реплик: {i}/{len(lines)}", i, len(lines))
@@ -914,7 +986,7 @@ class DubJobs:
             report(f"Режиссёр: слушаю оригинал ({len(need_en)} реплик)…")
             from . import power
             for i in range(0, len(need_en), 32):
-                if self.cancel_flag.is_set():
+                if self._checkpoint():
                     return
                 chunk = need_en[i:i + 32]
                 report(f"Режиссёр: слушаю оригинал {i}/{len(need_en)}", i, len(need_en))
@@ -928,7 +1000,7 @@ class DubJobs:
         # и в большой игре режиссёр остался бы без описания оригинала у большинства реплик
         styles: dict[str, dict] = {}
         for i, l in enumerate(todo):
-            if self.cancel_flag.is_set():
+            if self._checkpoint():
                 return
             if i % 100 == 0:
                 report(f"Режиссёр: что слышно в оригинале {i}/{len(todo)}", i, len(todo))
@@ -943,7 +1015,7 @@ class DubJobs:
         done = 0
         todo.sort(key=lambda l: l["id"])
         for i in range(0, len(todo), 12):
-            if self.cancel_flag.is_set():
+            if self._checkpoint():
                 return
             chunk = todo[i:i + 12]
             report(f"Режиссёр: подача реплик {i}/{len(todo)}", i, len(todo))
@@ -1038,7 +1110,7 @@ class DubJobs:
         if not fix and self._director_ready(gid):
             self._do_direct(gid, lines)
             lines = p.lines(ids=[l["id"] for l in lines])
-            if self.cancel_flag.is_set():
+            if self._checkpoint():
                 return
 
         report("Планы голосов персонажей…")
@@ -1076,7 +1148,7 @@ class DubJobs:
         notes = p.get("char_notes") or {}
         for i in range(0, len(lines), batch):
             batch_started = time.time()
-            if self.cancel_flag.is_set():
+            if self._checkpoint():
                 return
             chunk = lines[i:i + batch]
             eta = ""
@@ -1221,6 +1293,7 @@ class DubJobs:
                     new_info["judge"] = best_judge
                 p.update_line(l["id"], gen=str(out.relative_to(p.dir)), gen_duration=round(len(best) / orig_sr, 3),
                               status="generated", info=new_info, error=None)
+                self.state[gid].setdefault("produced", []).append(l["id"])  # для «остановить и удалить озвучку»
             power.pause(time.time() - batch_started)
             if ids is None:  # персонаж озвучен целиком — предложить послушать, пока идут остальные
                 for c in {l["char"] for l in chunk}:
@@ -1268,7 +1341,7 @@ class DubJobs:
                 profiles[c] = judge.speaker_embed([r["audio"]])
         use_ecapa = judge.ecapa_ready()
         for i in range(0, len(lines), 8):
-            if self.cancel_flag.is_set():
+            if self._checkpoint():
                 return
             chunk = lines[i:i + 8]
             report(f"Контролёр: проверка {i}/{len(lines)}", i, len(lines))
@@ -1317,7 +1390,7 @@ class DubJobs:
                 report(f"Режиссёр: новая подача для {len(need_dir)} реплик…")
                 tr = self._translator_for(gid)
                 for l in need_dir:
-                    if self.cancel_flag.is_set():
+                    if self._checkpoint():
                         break
                     j = l["info"].get("judge") or {}
                     diag = "; ".join(j.get("reasons") or []) + f". В оригинале: {director.describe_orig((l['info'] or {}).get('style'))}"
@@ -1671,7 +1744,7 @@ class DubJobs:
         if not p.get("extracted_at") or not p.stats()["total"]:
             self._do_extract(gid)
         for step in (self._do_subtitles, self._do_transcribe, self._do_translate, self._do_screen, self._auto_speakers):
-            if self.cancel_flag.is_set():
+            if self._checkpoint():
                 return
             step(gid)
         s = self.settings(gid)
@@ -1687,7 +1760,7 @@ class DubJobs:
                     asr.unload()
                     tts.unload()
                 for i, c in enumerate(todo, 1):
-                    if self.cancel_flag.is_set():
+                    if self._checkpoint():
                         return
                     report(f"Обучение тембра: {c['name']} ({i}/{len(todo)}), ~{c['est_minutes']} мин…")
                     try:
@@ -1695,11 +1768,11 @@ class DubJobs:
                         if c["id"] in sample_ids:  # проба сразу после обучения — слушать, не дожидаясь остальных
                             self._do_samples(gid, only_char=c["id"])
                     except Exception as e:
-                        if self.cancel_flag.is_set():
+                        if self._checkpoint():
                             return
                         print(f"обучение тембра {c['name']} не удалось: {e}")
                         traceback.print_exc()
-        if self.cancel_flag.is_set():
+        if self._checkpoint():
             return
         self._do_samples(gid)
         p.set("prepared_at", time.time())
@@ -1735,7 +1808,7 @@ class DubJobs:
         result = {"engine": variant.get("source"), "variant": variant, "at": time.time(), "partial": bool(only_char),
                   "chars": [c for c in (prev or {}).get("chars", []) if c["id"] != only_char] if prev else []}
         for i, c in enumerate(chars, 1):
-            if self.cancel_flag.is_set():
+            if self._checkpoint():
                 return
             report(f"Пробы голосов: {c['name']} ({i}/{len(chars)})", i - 1, len(chars))
             cands = [l for l in p.lines(char=c["id"]) if l["ru"] and 2.0 <= (l["duration"] or 0) <= 8
@@ -1782,7 +1855,7 @@ class DubJobs:
         lines = [l for l in p.lines(status="generated,approved") if l["gen"] and not ((l["info"] or {}).get("fit") or {}).get("kept")]
         todo = []
         for i, l in enumerate(lines):
-            if self.cancel_flag.is_set():
+            if self._checkpoint():
                 return
             if i % 50 == 0:
                 report(f"Поиск смеха и вздохов в оригинале: {i}/{len(lines)}", i, len(lines))
@@ -1852,7 +1925,7 @@ class DubJobs:
         tts.unload()
         have = speakers.embed_all(p, report, self.cancel_flag.is_set)
         judge.unload()
-        if self.cancel_flag.is_set():
+        if self._checkpoint():
             return
         report("Кто говорит: группирую голоса и подбираю имена…")
         tr = self._translator_for(gid) if self._director_ready(gid) or any(
@@ -1883,7 +1956,7 @@ class DubJobs:
         tts.unload()
         have = speakers.embed_all(p, report, self.cancel_flag.is_set)
         judge.unload()
-        if self.cancel_flag.is_set():
+        if self._checkpoint():
             return
         report("Кто говорит: раскладываю реплики по голосам…")
         tr = None
@@ -1946,7 +2019,7 @@ class DubJobs:
         if not p.get("extracted_at") or not p.stats()["total"]:
             self._do_extract(gid)
             self._do_translate(gid)
-        if self.cancel_flag.is_set():
+        if self._checkpoint():
             return
         res = package.import_package(p, Path(path), self._progress(gid))
         p.set("prepared_at", p.get("prepared_at") or time.time())
