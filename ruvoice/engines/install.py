@@ -20,7 +20,7 @@ from . import ENGINES_DIR
 
 APPLIO_TAG = "3.7.1"   # релиз Applio от 2026-10-26
 APPLIO_URL = f"https://github.com/IAHispano/Applio/archive/refs/tags/{APPLIO_TAG}.zip"
-APPLIO_SHA256 = None   # заполняется после первой проверенной установки
+APPLIO_SHA256 = "2a341a81283826957a08f6eb2a2739e4d92dd505d38e8baa792df10c3626f58e"  # архив 3.7.1, 18 652 781 байт
 _HF = "https://huggingface.co/IAHispano/Applio/resolve/main/Resources"
 ENVS = {
     "voxcpm": {"name": "VoxCPM2", "requirements": "requirements-voxcpm.txt", "models": ["tts-voxcpm"]},

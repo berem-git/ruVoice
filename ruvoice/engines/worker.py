@@ -54,10 +54,15 @@ class RVC:
         self.vc = None
 
     def _env(self):
+        """Среда движка первой (свои transformers/librosa), затем Applio; сборка PyTorch из runtime\\accel —
+        только если она там лежит (в среде разработки torch стоит прямо в runtime\\python)."""
         env = dict(os.environ)
-        env["PYTHONPATH"] = ";".join([str(PROJECT_DIR / "runtime" / "engines" / "rvc"),
-                                      str(PROJECT_DIR / "runtime" / "accel" / "cuda"), str(PROJECT_DIR),
-                                      str(self.APPLIO)])
+        parts = [str(PROJECT_DIR / "runtime" / "engines" / "rvc"), str(self.APPLIO)]
+        accel_dir = PROJECT_DIR / "runtime" / "accel" / "cuda"
+        if accel_dir.is_dir():
+            parts.append(str(accel_dir))
+        parts.append(str(PROJECT_DIR))
+        env["PYTHONPATH"] = ";".join(parts)
         env["PYTHONUTF8"] = "1"
         env["PYTHONNOUSERSITE"] = "1"
         return env
@@ -138,12 +143,13 @@ class RVC:
             self.vc = VoiceConverter()
         p = req.get("params") or {}
         # index_rate 0 — не подмешивать фрагменты английских записей (они дают акцент);
-        # protect 0.5 — беречь глухие согласные и дыхание от искажений
+        # protect 0.5 — беречь глухие согласные и дыхание от искажений; высота — постоянный сдвиг
+        # персонажа (donors.pitch_shift), без автоподгонки каждой реплики
         self.vc.convert_audio(audio_input_path=req["source"], audio_output_path=req["out"], model_path=req["pth"],
                               index_path=req.get("index") or "", pitch=int(p.get("pitch", 0)), f0_method="rmvpe",
                               index_rate=float(p.get("index_rate", 0.0)), volume_envelope=1.0,
                               protect=float(p.get("protect", 0.5)), embedder_model="contentvec",
-                              export_format="WAV", proposed_pitch=bool(p.get("auto_pitch", True)))
+                              export_format="WAV", proposed_pitch=bool(p.get("auto_pitch", False)))
         wav, sr = sf.read(req["out"], dtype="float32", always_2d=True)
         return wav.mean(axis=1), sr
 
