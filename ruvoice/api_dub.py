@@ -68,8 +68,6 @@ class Variant(BaseModel):
 
 class TrainReq(BaseModel):
     char: str
-    steps: int = 300       # эпохи обучения RVC (method=rvc)
-    method: str = "tts"    # tts — дообучить модель речи под голос (LoRA); rvc — модель переноса тембра
 
 
 class DownloadReq(BaseModel):
@@ -327,45 +325,6 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
         items = p.lines(status=status, char=char, query=q, limit=limit, offset=offset, rework=rework)
         return {"items": items, "total": p.count(status=status, char=char, query=q, rework=rework)}
 
-    @r.get("/projects/{gid:path}/voice-identities")
-    def voice_identities(gid: str):
-        from . import identity
-        return identity.view(_project(gid))
-
-    @r.post("/projects/{gid:path}/voice-trials")
-    def voice_trials(gid: str, body: Ids):
-        p = _project(gid)
-        if not 1 <= len(body.ids) <= 4 or any(not p.line(i) for i in body.ids):
-            raise HTTPException(400, "Выберите от одной до четырёх исходных реплик")
-        if not all(e in engines.available_tts() for e in ("ru", "voxcpm")):
-            raise HTTPException(400, "Для этих проб нужны Qwen-RU и VoxCPM2")
-        dub.enqueue(gid, "voice_trials", seed_ids=body.ids)
-        return dub.status(gid)
-
-    @r.post("/projects/{gid:path}/voice-identities")
-    def choose_voice_identity(gid: str, body: dict):
-        from . import identity
-        p = _project(gid)
-        if dub.current:
-            raise HTTPException(409, "Дождитесь окончания текущей задачи")
-        try:
-            if body.get("clear"):
-                identity.clear(p, str(body.get("char") or ""))
-            else:
-                token = body.get("candidate")
-                if not token:
-                    line = p.line(str(body.get("line") or ""))
-                    if not line or not line["gen"]:
-                        raise ValueError("Выберите озвученную русскую реплику")
-                    row = identity.propose(p, line["char"], line["gen"],
-                                           (line["info"] or {}).get("spoken") or line["ru"],
-                                           (line["info"] or {}).get("engine") or dub._engine_for(gid), line["id"])
-                    token = row["id"]
-                identity.activate(p, token)
-        except (ValueError, OSError) as error:
-            raise HTTPException(400, str(error))
-        return identity.view(p)
-
     @r.get("/projects/{gid:path}/audio")
     def line_audio(gid: str, id: str = "", kind: str = "orig", file: str = ""):
         p = _project(gid)
@@ -578,14 +537,11 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
 
     @r.post("/projects/{gid:path}/train-voice")
     def train_voice(gid: str, body: TrainReq):
-        """Обучить RVC-голос персонажа на его записях."""
+        """Обучить модель тембра персонажа (RVC) на уровне из настроек; контроль — после обучения."""
         _project(gid)
-        if body.method == "rvc":
-            dub.enqueue(gid, "train_voice", char=body.char, steps=max(20, min(body.steps, 3000)))
-        else:
-            s = dub.settings(gid)
-            dub.enqueue(gid, "train_tts", char=body.char, max_seconds=float(s.get("ft_minutes", 15)) * 60,
-                        epochs=int(s.get("ft_epochs", 4)))
+        if not engines.rvc_available():
+            raise HTTPException(400, "Перенос тембра не установлен — «Система и ускорение» → «Среды движков»")
+        dub.enqueue(gid, "train_voice", char=body.char)
         return dub.status(gid)
 
     @r.post("/projects/{gid:path}/judge")

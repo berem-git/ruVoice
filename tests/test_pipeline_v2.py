@@ -126,6 +126,7 @@ class PlanCase(ProjectCase):
             patch("ruvoice.asr.words", return_value=[]),
             patch("ruvoice.accel.require_gpu"), patch("ruvoice.accel.info", return_value={"device": "cpu", "vram_gb": 0}),
             patch("ruvoice.judge.ecapa_ready", return_value=False),
+            patch("ruvoice.judge.VE_WEIGHTS", root / "no-ve.pt"),  # контролёр выключен даже при скачанных моделях
             patch("ruvoice.engines.sources", return_value=["ru"]),
             patch("ruvoice.engines.cloners", return_value=["ru", "voxcpm"]),
             patch("ruvoice.engines.rvc_available", return_value=True),

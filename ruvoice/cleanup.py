@@ -3,8 +3,9 @@
 В проекте озвучки (data\\projects\\<id>) мусор — это:
   • варианты реплик, оставшиеся после выбора лучшего (gen\\_cand_*.wav);
   • русские файлы, на которые не ссылается ни одна реплика (gen\\*.wav-сироты);
-  • рабочие папки обучения голоса (voices\\*\\tts_data, val, dataset, before, after);
-  • дообученные модели речи (по ~4 ГБ на персонажа), если дообучение выключено или модель не прошла контроль;
+  • рабочие папки обучения голоса (voices\\*\\tts_data, val, dataset, before, after, rvc\\dataset);
+  • старые дообученные модели речи 1.0.0 (по ~4 ГБ на персонажа), модели RVC без контроля, незавершённое
+    обучение тембра (voices\\*\\rvc без meta.json), старые эталоны голоса (voice_identities);
   • старые прогоны контрольной сцены (кроме трёх последних), пробные папки samples\\test_*, compare\\;
   • профили голоса, на которые больше нет ссылок.
 Плюс общий кэш программы (cache\\, кроме менеджера пакетов uv).
@@ -69,26 +70,23 @@ def project_garbage(pdir: Path, dry: bool = True) -> dict:
             elif f.suffix.lower() == ".wav" and rel not in used:
                 drop(f, "файл без реплики")
     voices = pdir / "voices"
-    tts_voices = meta.get("tts_voices") or {}
-    # дообучение задаёт уровень ft_level (по умолчанию «среднее»); старый флаг tts_finetune в сохранённых
-    # настройках бывает False от прежних версий — по нему обученные голоса удалять нельзя
-    use_ft = settings.get("ft_level", "medium") != "off"
+    rvc_voices = meta.get("voices") or {}
     if voices.is_dir():
         for v in voices.iterdir():
             if not v.is_dir():
                 continue
             for w in WORK_DIRS:
                 drop(v / w, "рабочая папка обучения")
-            entry = next((e for e in tts_voices.values() if Path(e.get("dir", "")).parts[:2] == ("voices", v.name)), None)
-            for big in ("tts_full", "tts"):
-                if (v / big).exists() and (not use_ft or not entry or entry.get("disabled")):
-                    drop(v / big, "дообученная модель не используется")
-            # промежуточные эпохи полного дообучения (по ~4 ГБ): нужна только та, на которую ссылается голос
-            if entry and (v / "tts_full").is_dir():
-                keep = Path(entry.get("dir", "")).name
-                for ck in (v / "tts_full").glob("checkpoint-epoch-*"):
-                    if ck.name != keep:
-                        drop(ck, "промежуточная эпоха дообучения")
+            for old in ("tts", "tts_full"):  # дообучение Qwen из 1.0.0 (по ~4 ГБ) конвейером v2 не используется
+                drop(v / old, "старое дообучение модели речи")
+            for old in ("model.pth", "model.index"):  # модели RVC 1.0.0 без контроля — не используются
+                drop(v / old, "старая модель тембра без контроля")
+            rvc = v / "rvc"
+            if rvc.is_dir():
+                drop(rvc / "dataset", "рабочая папка обучения тембра")
+                if not (rvc / "meta.json").exists():
+                    drop(rvc, "незавершённое обучение тембра")
+    drop(pdir / "voice_identities", "старые эталоны голоса (1.0.0)")
     samples = pdir / "samples"
     if samples.is_dir():
         for d in samples.iterdir():
@@ -117,13 +115,16 @@ def project_garbage(pdir: Path, dry: bool = True) -> dict:
                 c.executemany("UPDATE lines SET gen=NULL, gen_duration=NULL, "
                               "status=CASE WHEN status IN ('generated','approved','rejected') THEN 'translated' ELSE status END "
                               "WHERE id=?", [(i,) for i in missing])
-                if not use_ft and tts_voices:
-                    pass
-    if not dry and tts_voices:
-        alive = {k: e for k, e in tts_voices.items() if (pdir / e.get("dir", "_")).exists()}
-        if len(alive) != len(tts_voices):
-            with c:
-                c.execute("INSERT OR REPLACE INTO meta VALUES ('tts_voices', ?)", (json.dumps(alive, ensure_ascii=False),))
+    if not dry:
+        # записи о тембре: остаются только модели конвейера v2 (voices/<char>/rvc с meta.json), чьи файлы на месте
+        alive = {k: e for k, e in rvc_voices.items()
+                 if e.get("pth") and (pdir / e["pth"]).exists() and (pdir / e["pth"]).parent.name == "rvc"
+                 and ((pdir / e["pth"]).parent / "meta.json").exists()}
+        with c:
+            if len(alive) != len(rvc_voices):
+                c.execute("INSERT OR REPLACE INTO meta VALUES ('voices', ?)", (json.dumps(alive, ensure_ascii=False),))
+            if "tts_voices" in meta:
+                c.execute("DELETE FROM meta WHERE key = 'tts_voices'")
     c.close()
     return {"bytes": sum(n for _, n in items), "items": [f"{t} ({n / 2**20:.0f} МБ)" for t, n in items[:50]],
             "fixed_lines": fixed}

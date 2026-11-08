@@ -19,6 +19,10 @@ Model weights are downloaded separately and have their own model licenses.
 | repak | https://github.com/trumank/repak — Apache-2.0 |
 | retoc | https://github.com/trumank/retoc — MIT |
 | uv | https://github.com/astral-sh/uv — Apache-2.0 / MIT |
+| Applio (RVC) | https://github.com/IAHispano/Applio — MIT; ставится из программы в runtime/engines/rvc (релиз 3.7.1), претрейны HiFi-GAN / RMVPE / ContentVec с https://huggingface.co/IAHispano/Applio |
+| OmniVoice | https://github.com/k2-fsa/OmniVoice — Apache-2.0; ставится из программы в runtime/engines/omnivoice, веса k2-fsa/OmniVoice |
+| Silero TTS v5.6 | https://github.com/snakers4/silero-models — CC BY-NC 4.0 (некоммерческая); скачивается только при явном выборе бэкенда |
+| Донорский банк голосов (ruvoice/donors) | 16 синтетических русских голосов, созданных Qwen3-TTS VoiceDesign (Apache-2.0) по текстовым описаниям; записей реальных людей не содержит |
 
 FFmpeg's complete configuration is available using `tools/ffmpeg/bin/ffmpeg.exe
 -version`. Upstream build recipes, dependency versions and source download
