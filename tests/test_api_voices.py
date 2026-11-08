@@ -63,6 +63,15 @@ class VoicesApiTests(unittest.TestCase):
         self.assertEqual(hero["samples"], ["h19", "h18", "h17"])  # самые длинные
         self.assertEqual((npc["tier"], npc["donor"], npc["timbre"]["state"]), ("episodic", None, "none"))
 
+    def test_voices_reason_explains_fast_path(self):
+        with patch("ruvoice.engines.rvc_available", return_value=False):
+            rows = {r["id"]: r for r in self.client.get(f"/api/projects/{self.gid}/voices").json()}
+        self.assertEqual(rows["hero"]["timbre"]["reason"], "перенос тембра не установлен")
+        self.assertEqual(rows["npc"]["timbre"]["reason"], "эпизодический персонаж")
+        with patch("ruvoice.engines.rvc_available", return_value=True):
+            rows = {r["id"]: r for r in self.client.get(f"/api/projects/{self.gid}/voices").json()}
+        self.assertEqual(rows["hero"]["timbre"]["reason"], "похожесть не выросла")
+
     def test_voices_tier_override_and_donor_choice(self):
         res = self.client.post(f"/api/projects/{self.gid}/voices/tier", json={"char": "npc", "tier": "train"})
         self.assertEqual(res.status_code, 200, res.text)

@@ -89,6 +89,14 @@ def voice(p, char: str) -> dict | None:
     return {"method": "rvc", "pth": str(pth), "index": str(idx) if idx and idx.exists() else None}
 
 
+def needs_training(entry: dict | None, lvl: dict) -> bool:
+    """Обучать ли (заново) на этом уровне: нет записи или контроль не завершён — да; принятая или слабая модель —
+    только если уровень вырос (эпох больше, чем было). Слабую на том же уровне заново не мучаем."""
+    if not entry or entry.get("val") is None:
+        return True
+    return int(entry.get("epochs") or 0) < int(lvl["epochs"])
+
+
 def mains(p, settings: dict) -> list[dict]:
     """Главные персонажи (с учётом ручных переопределений), по убыванию числа реплик."""
     over = p.get("timbre_override") or {}
@@ -112,11 +120,12 @@ def plan(jobs, gid: str) -> dict:
         minutes_used = min((c["seconds"] or 0) / 60, lvl["minutes"])
         planned.append({"id": c["id"], "name": c["name"], "minutes": round((c["seconds"] or 0) / 60, 1),
                         "trained": voice(p, c["id"]) is not None, "weak": bool(v and v.get("weak")),
+                        "retrain": needs_training(v, lvl),
                         "reason": (v or {}).get("reason"), "epochs": lvl["epochs"], "max_seconds": lvl["minutes"] * 60,
                         "est_minutes": round(minutes_used * lvl["epochs"] * rate / 60)})
     ids = {c["id"] for c in planned}
     return {"level": key, "ready": engines.rvc_available(), "planned": planned,
-            "total_minutes": sum(c["est_minutes"] for c in planned if not c["trained"]),
+            "total_minutes": sum(c["est_minutes"] for c in planned if c["retrain"]),
             "skipped": [c["name"] for c in p.characters() if c["id"] not in ids][:12]}
 
 
@@ -131,7 +140,7 @@ def estimate(jobs, gid: str) -> dict:
             out[key] = {"name": "Без обучения", "chars": 0, "todo": 0, "minutes": 0, "disk_gb": 0, "names": []}
             continue
         chars = mains(p, {**s, "timbre_level": key})
-        todo = [c for c in chars if voice(p, c["id"]) is None]
+        todo = [c for c in chars if needs_training(entry(p, c["id"]), lvl)]
         minutes = sum(min((c["seconds"] or 0) / 60, lvl["minutes"]) * lvl["epochs"] * rate / 60 for c in todo)
         out[key] = {"name": lvl["name"], "chars": len(chars), "todo": len(todo), "minutes": round(minutes),
                     "disk_gb": round(DISK_GB_PER_VOICE * len(chars), 2), "names": [c["name"] for c in chars][:6]}
@@ -270,7 +279,9 @@ def calibrate(jobs, gid: str, char: str, holdout: list[dict]) -> dict:
     if res["f0_rvc"] and profile_f0:
         res["f0_shift"] = round(float(12 * math.log2(res["f0_rvc"] / profile_f0)), 1)
     problems = []
-    if res["sim_base"] is not None and res["sim_rvc"] is not None and not res["sim_rvc"] > res["sim_base"]:
+    if res["sim_base"] is None or res["sim_rvc"] is None:
+        problems.append("похожесть не измерена (нет модели VoiceEncoder или профиля персонажа) — модель не проверена")
+    elif not res["sim_rvc"] > res["sim_base"]:
         problems.append(f"похожесть не выросла ({res['sim_rvc']} против {res['sim_base']} без тембра)")
     if res["pron_base"] is not None and res["pron_rvc"] is not None and res["pron_rvc"] > res["pron_base"] + PRON_TOLERANCE:
         problems.append(f"произношение стало хуже (ошибок {res['pron_rvc']:.0%} против {res['pron_base']:.0%})")

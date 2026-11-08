@@ -842,36 +842,55 @@ class DubJobs:
 
     # --- стабильность голоса: «русский голос» персонажа ---
 
-    def _ru_voice(self, p: Project, char: str) -> tuple[np.ndarray | None, float | None]:
+    def _uses_timbre(self, p: Project, char: str) -> bool:
+        """Идёт ли персонаж сейчас с обученным тембром (главный, модель принята, среда RVC на месте)."""
+        from . import engines, timbre
+        if not engines.rvc_available() or timbre.voice(p, char) is None:
+            return False
+        row = next((c for c in p.characters() if c["id"] == char), {"id": char, "seconds": 0, "lines": 0})
+        return timbre.tier(row, self.settings(p.game_id), (p.get("timbre_override") or {}).get(char)) == "main"
+
+    def _ru_voice(self, p: Project, char: str, with_timbre: bool | None = None) -> tuple[np.ndarray | None, float | None]:
         """«Русский голос» персонажа для контролёра: фиксированный центр ECAPA после контроля тембра
-        (timbre.calibrate) или отпечаток оригинального профиля; порог дрейфа — по накопленным сходствам."""
+        (timbre.calibrate) — только пока персонаж идёт с этим тембром; иначе отпечаток оригинального профиля,
+        порог дрейфа — по накопленным сходствам."""
         from . import judge
         if not judge.ecapa_ready():
             return None, None
-        rv = (p.get("ru_voice") or {}).get(char)
-        if rv and rv.get("e"):
+        if with_timbre is None:
+            with_timbre = self._uses_timbre(p, char)
+        all_rv = p.get("ru_voice") or {}
+        rv = all_rv.get(char)
+        if rv and rv.get("e") and rv.get("fixed") and with_timbre:
             e = np.asarray(rv["e"], dtype=np.float32)
-            e = e / (np.linalg.norm(e) + 1e-9)
-            if rv.get("fixed"):
-                return e, rv.get("floor")
-            sims = rv.get("sims") or []
-            return e, (float(np.median(sims)) - DRIFT_MARGIN) if len(sims) >= 6 else None
+            return e / (np.linalg.norm(e) + 1e-9), rv.get("floor")
+        prof_rv = rv.get("profile") if rv and rv.get("fixed") else rv  # у фиксированного центра профиль лежит рядом
+        if prof_rv and prof_rv.get("e"):
+            e = np.asarray(prof_rv["e"], dtype=np.float32)
+            sims = prof_rv.get("sims") or []
+            return e / (np.linalg.norm(e) + 1e-9), (float(np.median(sims)) - DRIFT_MARGIN) if len(sims) >= 6 else None
         prof = self.character_profile(p, char)
         if not prof:
             return None, None
         e = judge.ecapa_embed([prof["audio"]])[0]
-        all_rv = p.get("ru_voice") or {}
-        all_rv[char] = {"e": e.tolist(), "n": 0, "sims": [], "seed": "original"}
+        entry = {"e": e.tolist(), "n": 0, "sims": [], "seed": "original"}
+        if rv and rv.get("fixed"):
+            rv["profile"] = entry
+        else:
+            all_rv[char] = entry
         p.set("ru_voice", all_rv)
         return e, None
 
-    def _ru_voice_note(self, p: Project, char: str, sim: float):
+    def _ru_voice_note(self, p: Project, char: str, sim: float, with_timbre: bool | None = None):
         """Сходство принятой реплики с центром — только для порога дрейфа; сам центр не двигается."""
         all_rv = p.get("ru_voice") or {}
         rv = all_rv.get(char)
         if not rv:
             return
-        rv["sims"] = (rv.get("sims") or [])[-80:] + [round(float(sim), 3)]
+        if with_timbre is None:
+            with_timbre = self._uses_timbre(p, char)
+        target = rv if (with_timbre or not rv.get("fixed")) else rv.setdefault("profile", {"e": None, "n": 0, "sims": []})
+        target["sims"] = (target.get("sims") or [])[-80:] + [round(float(sim), 3)]
         all_rv[char] = rv
         p.set("ru_voice", all_rv)
 
@@ -1024,7 +1043,19 @@ class DubJobs:
 
         report("Планы голосов персонажей…")
         chars = {l["char"] for l in lines}
-        plans = {c: self.voice_plan(p, c) for c in chars}
+        plans = {}
+        for c in chars:  # сбой плана одного персонажа (нет донора, образца…) не останавливает остальных
+            try:
+                plans[c] = self.voice_plan(p, c)
+            except Exception as e:
+                print(f"план голоса «{c}»: {e}")
+                for l in lines:
+                    if l["char"] == c:
+                        p.update_line(l["id"], status="error", error=f"План голоса: {str(e)[:250]}")
+        lines = [l for l in lines if l["char"] in plans]
+        if not lines:
+            report("Ни для одного персонажа не удалось составить план голоса")
+            return
         profiles = {}
         if use_judge:
             for c in chars:
@@ -1105,17 +1136,23 @@ class DubJobs:
                 raw = []  # (wav, sr) до подгонки — по ним меряем голос и акцент (без вклеенного оригинала)
                 scored = []  # (fitted, finfo)
                 speedup = (fixplan or {}).get("max_speedup") or s["max_speedup"]
+                timbre_error = None
                 for wav, sr in cands:
                     wav, sr = self._apply_note(wav, sr, notes.get(l["char"]))
                     if plan["timbre"]:
                         try:
                             wav, sr = tts.convert_timbre(wav, sr, plan["rvc"], {"pitch": plan["pitch"], "auto_pitch": False,
                                                                                  "index_rate": 0.0, "protect": 0.5})
-                        except Exception as e:
-                            print(f"перенос тембра: {e}")
+                        except Exception as e:  # донорский голос без тембра за персонажа не выдаём — вариант выбывает
+                            timbre_error = str(e)[:200]
+                            print(f"перенос тембра ({l['id']}): {e}")
+                            continue
                     fitted, finfo = self._fit_line(p, l, wav, sr, orig, orig_sr, speedup)
                     raw.append((wav, sr))
                     scored.append((fitted, finfo))
+                if not scored:
+                    p.update_line(l["id"], status="error", error=f"Перенос тембра не удался: {timbre_error or 'нет вариантов'}")
+                    continue
                 if fix and l["gen"] and (p.dir / l["gen"]).exists():  # старая запись соревнуется с новыми
                     old, osr = audio.read(p.dir / l["gen"])
                     old = audio.resample(old, osr, orig_sr)
@@ -1130,7 +1167,7 @@ class DubJobs:
                 judging = use_judge and (len(scored) > 1 or inline_asr)
                 heard_all = asr.transcribe([str(t) for t in tmps], language="russian") if judging and inline_asr else [None] * len(tmps)
                 prons = pron.check(raw, [l["ru"]] * len(raw)) if judging and use_pron else [None] * len(raw)
-                centroid, floor = self._ru_voice(p, l["char"]) if use_ecapa else (None, None)
+                centroid, floor = self._ru_voice(p, l["char"], plan["timbre"]) if use_ecapa else (None, None)
                 embs = judge.ecapa_embed(raw) if use_ecapa and centroid is not None else None
                 cons = [float(e @ centroid) for e in embs] if embs is not None else [None] * len(raw)
                 orig_emo, orig_ev = self._orig_judge(p, l) if judging else (None, None)
@@ -1160,7 +1197,7 @@ class DubJobs:
                         best, best_info, best_judge, best_k, best_score = fitted, finfo, jr or {"score": 0}, k, score
                     tmp.unlink(missing_ok=True)
                 if embs is not None and cons[best_k] is not None and best_judge.get("verdict") != "rework":
-                    self._ru_voice_note(p, l["char"], cons[best_k])
+                    self._ru_voice_note(p, l["char"], cons[best_k], plan["timbre"])
                 if i < 12 or i % 200 == 0:
                     print(f"озвучка: реплика {i} ({l['char']}, {len(scored)} вар.) за {time.time() - t_line:.1f} с")
                 t_line = time.time()
@@ -1585,9 +1622,10 @@ class DubJobs:
         return judge.VE_WEIGHTS.exists() and models.path("judge-emotion8") is not None
 
     def _render(self, gid: str, p: Project, char: str, lines: list[dict], out_dir: Path, seed: int | None = None,
-                plan: dict | None = None, timbre: bool = True) -> tuple[list[str], float | None]:
+                plan: dict | None = None, timbre: bool = True, take: int = 0) -> tuple[list[str], float | None]:
         """Озвучить реплики персонажа в out_dir по его плану (timbre=False — тот же план без переноса тембра);
-        вернуть файлы и среднюю похожесть на персонажа."""
+        зёрна — как у полной озвучки для прогона take (line_seed), если seed не задан явно.
+        Вернуть файлы и среднюю похожесть на персонажа."""
         from . import judge, tts
         plan = dict(plan or self.voice_plan(p, char))
         if not timbre:
@@ -1605,7 +1643,7 @@ class DubJobs:
                 params["temperature"] = 0.75 + 0.05 * min(3, int(deliv.get("intensity") or 0))
                 params["subtalker_temperature"] = 0.5
             outs += tts.synthesize(src, [text], [ref], [max((l["duration"] or 2) * 2, 3) + len(l["ru"]) * 0.03], params,
-                                   seed=line_seed(l["id"], 0, 0) if seed is None else seed)
+                                   seed=line_seed(l["id"], take, 0) if seed is None else seed)
         files, sims = [], []
         note = (p.get("char_notes") or {}).get(char)
         for l, (wav, sr) in zip(lines, outs):
@@ -1642,7 +1680,7 @@ class DubJobs:
                 report("Перенос тембра не установлен — главные персонажи пойдут быстрым путём")
             else:
                 plan = timbre.plan(self, gid)
-                todo = [c for c in plan["planned"] if not c["trained"] and not (timbre.entry(p, c["id"]) or {}).get("val")]
+                todo = [c for c in plan["planned"] if c["retrain"]]
                 sample_ids = {c["id"] for c in self._sample_chars(p)}
                 if todo:
                     self._release_translator()
@@ -1710,8 +1748,7 @@ class DubJobs:
             lines = cands[::step][:SAMPLE_LINES]
             try:
                 plan = self.voice_plan(p, c["id"])
-                files, sim = self._render(gid, p, c["id"], lines, p.dir / "samples" / _safe(c["id"]),
-                                          seed=100003 * take if take else None, plan=plan)
+                files, sim = self._render(gid, p, c["id"], lines, p.dir / "samples" / _safe(c["id"]), plan=plan, take=take)
             except Exception as e:
                 result["chars"].append({"id": c["id"], "name": c["name"], "error": str(e)[:200], "items": []})
                 continue

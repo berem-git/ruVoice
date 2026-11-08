@@ -351,9 +351,11 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
         bank = donors.load()
         assigned = p.get("donors") or {}
         f0s = p.get("voice_f0") or {}
+        rvc_ready = engines.rvc_available()
         out = []
         for c in p.characters():
             entry = timbre.entry(p, c["id"])
+            tier = timbre.tier(c, s, over.get(c["id"]))
             if timbre.voice(p, c["id"]):
                 state = "trained"
             elif entry and entry.get("val") is not None:
@@ -362,16 +364,29 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
                 state = "training"
             else:
                 state = "none"
+            # почему персонаж идёт быстрым путём — те же причины, что в voice_plan, без подбора донора
+            if tier != "main":
+                reason = "эпизодический персонаж"
+            elif not rvc_ready:
+                reason = "перенос тембра не установлен"
+            elif state == "trained":
+                reason = None
+            elif state == "weak":
+                reason = (entry or {}).get("reason") or "модель тембра не прошла контроль"
+            elif state == "training":
+                reason = "ждёт контроля"
+            else:
+                reason = "тембр ещё не обучен"
             d = assigned.get(c["id"])
             donor = donors.by_id(bank, d["id"]) if d else None
             f0 = f0s.get(c["id"])
             samples = sorted((l for l in p.lines(char=c["id"]) if l["orig"]), key=lambda l: -(l["duration"] or 0))[:3]
             out.append({"id": c["id"], "name": c["name"], "lines": c["lines"] or 0, "seconds": round(c["seconds"] or 0),
                         "f0": f0, "voice_type": judge.voice_type(f0) if f0 else None,
-                        "tier": timbre.tier(c, s, over.get(c["id"])), "override": over.get(c["id"]),
+                        "tier": tier, "override": over.get(c["id"]),
                         "donor": {"id": donor["id"], "gender": donor["gender"], "age": donor["age"], "pitch": d.get("pitch", 0),
                                   "manual": bool(d.get("manual"))} if donor else None,
-                        "timbre": {"state": state, "reason": (entry or {}).get("reason")},
+                        "timbre": {"state": state, "reason": reason},
                         "samples": [l["id"] for l in samples]})
         return out
 

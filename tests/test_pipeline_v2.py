@@ -127,6 +127,7 @@ class PlanCase(ProjectCase):
             patch("ruvoice.accel.require_gpu"), patch("ruvoice.accel.info", return_value={"device": "cpu", "vram_gb": 0}),
             patch("ruvoice.judge.ecapa_ready", return_value=False),
             patch("ruvoice.judge.VE_WEIGHTS", root / "no-ve.pt"),  # контролёр выключен даже при скачанных моделях
+            patch("ruvoice.translate._model_path", return_value=None),  # режиссёр выключен даже при скачанном переводчике
             patch("ruvoice.engines.sources", return_value=["ru"]),
             patch("ruvoice.engines.cloners", return_value=["ru", "voxcpm"]),
             patch("ruvoice.engines.rvc_available", return_value=True),
@@ -226,6 +227,75 @@ class GenerateTests(PlanCase):
         self.assertTrue(rv["fixed"])
         self.assertEqual(rv["sims"], [1.0])
         self.assertEqual(self.p.line("h00")["info"]["consistency"], 1.0)
+
+
+class ReviewFixTests(PlanCase):
+    """Замечания рецензии: пробы меняются от прогона к прогону, сбой плана одного персонажа не валит озвучку,
+    сбой переноса тембра не выдаёт чужой голос за персонажа, устаревший фиксированный центр не применяется."""
+
+    def test_samples_next_variant_changes_seeds_and_matches_generation(self):
+        self.accept_hero()
+        with patch("ruvoice.judge.VE_WEIGHTS", Path(self.tmp.name) / "no-ve.pt"):
+            self.jobs._do_samples(self.gid)
+            first = [c["seed"] for c in self.synth_calls]
+            self.synth_calls.clear()
+            self.jobs._do_samples(self.gid, next_variant=True)
+            second = [c["seed"] for c in self.synth_calls]
+        self.assertEqual(self.p.get("voice_variant"), 1)
+        self.assertNotEqual(first, second)
+        ids = [c["id"] for c in self.p.get("samples")["chars"][0]["items"]]
+        self.assertEqual(second[:len(ids)], [dub.line_seed(i, 1, 0) for i in ids])  # те же зёрна, что у полной озвучки
+
+    def test_samples_api_sends_next_variant(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from ruvoice.api_dub import create_router
+        jobs, lib = Mock(), Mock()
+        lib.get.return_value = {"name": "x"}
+        jobs.project.return_value = self.p
+        jobs.status.return_value = {}
+        with patch("ruvoice.accel.info", return_value={}):
+            app = FastAPI()
+            app.include_router(create_router(lib, jobs))
+            with TestClient(app) as client:
+                client.post(f"/api/projects/{self.gid}/samples", json={"next": True})
+        jobs.enqueue.assert_called_with(self.gid, "samples", next_variant=True)
+
+    def test_failed_plan_of_one_character_does_not_abort_others(self):
+        self.accept_hero()
+        real = self.jobs.voice_plan
+
+        def plan(p, char, rvc=None):
+            if char == "npc":
+                raise RuntimeError("Донорский банк пуст")
+            return real(p, char, rvc)
+        self.jobs.voice_plan = plan
+        self.jobs._do_generate(self.gid)
+        self.assertEqual(self.p.line("h00")["status"], "generated")
+        npc = self.p.line("n00")
+        self.assertEqual(npc["status"], "error")
+        self.assertIn("Донорский банк пуст", npc["error"])
+
+    def test_failed_timbre_conversion_never_ships_donor_voice(self):
+        self.accept_hero()
+        self.convert.side_effect = RuntimeError("Процесс движка rvc завершился")
+        self.jobs._do_generate(self.gid, ids=["h00", "n00"])
+        hero = self.p.line("h00")
+        self.assertEqual(hero["status"], "error")
+        self.assertIsNone(hero["gen"])
+        self.assertIn("тембр", hero["error"].lower())
+        self.assertEqual(self.p.line("n00")["status"], "generated")  # быстрый путь без тембра не пострадал
+
+    def test_fixed_centre_ignored_when_plan_has_no_timbre(self):
+        self.accept_hero()
+        self.p.set("ru_voice", {"hero": {"e": [1.0, 0.0], "fixed": True, "floor": 0.9, "n": 6, "sims": []}})
+        with patch("ruvoice.judge.ecapa_ready", return_value=True), patch("ruvoice.engines.rvc_available", return_value=False), \
+             patch("ruvoice.judge.ecapa_embed", side_effect=lambda items: np.tile(np.array([[0.0, 1.0]], dtype=np.float32), (len(items), 1))):
+            self.jobs._do_generate(self.gid, ids=["h00"])
+        hero = self.p.line("h00")
+        self.assertEqual(hero["status"], "generated")
+        self.assertNotEqual((hero["info"].get("judge") or {}).get("verdict"), "rework")  # не судим клон по центру тембра
+        self.assertEqual(self.p.get("ru_voice")["hero"]["e"], [1.0, 0.0])  # сам центр не тронут
 
 
 class SeedTests(unittest.TestCase):

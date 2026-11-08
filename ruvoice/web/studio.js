@@ -266,6 +266,7 @@ function timbreLevelPicker(info, busy) {
     const l = t.levels[key];
     if (!l) return "";
     const what = key === "off" ? "никого не обучать — все персонажи быстрым путём"
+      : !l.chars ? (info.prepared ? "главных персонажей нет (меньше 2 минут речи у каждого)" : "главные персонажи появятся после подготовки")
       : `${l.chars} гл. персонажей, ${l.todo ? fmtMin(l.minutes) : "уже обучены"}, ~${l.disk_gb} ГБ на диске`;
     return h("label", { class: "radio", title: (l.names || []).join(", ") },
       h("input", { type: "radio", name: "timbre_level", checked: cur === key, disabled: busy, onchange: () => save(key) }),
@@ -310,7 +311,7 @@ function stepSamples(info, generatedAll, busy, preparing) {
     preparing || (info.settings?.auto_install && (info.status.running || info.status.queued.length)) ? []
       : decided ? [h("span", { class: "muted small" }, "Игра уже озвучена этим способом.")]
       : [h("button", { class: "btn primary big", disabled: busy, onclick: () => runSteps(["generate"]) }, "👍 Нравится — озвучить всю игру"),
-         h("button", { class: "btn", disabled: busy, onclick: () => run("/samples", {}) }, "🔁 Переделать пробы"),
+         h("button", { class: "btn", disabled: busy, title: "Другой прогон: другие случайные зёрна у тех же реплик", onclick: () => run("/samples", { next: true }) }, "🔁 Переделать пробы"),
          h("button", { class: "btn subtle", disabled: busy, onclick: () => confirm("Начать заново: текст и пробы пересоберутся, обученные голоса останутся. Продолжить?") && run("/restart") }, "↺ Начать заново")],
     decided ? "done" : "active");
 }
@@ -513,6 +514,7 @@ function benchPanel(info, busy) {
     h("div", { class: "bench-variants" }, h("span", { class: "muted small" }, "Загрузка вариантов…")));
   const fill = variants => {
     const cont = box.querySelector(".bench-variants");
+    if (!info.prepared) { cont.replaceChildren(h("span", { class: "muted small" }, "Стенд доступен после подготовки: ему нужны реплики с русским текстом.")); return; }
     if (!variants.length) { cont.replaceChildren(h("span", { class: "muted small" }, "Нет готовых движков речи.")); return; }
     const checks = variants.map(v => h("label", { class: "radio inline" }, h("input", { type: "checkbox", value: v, checked: ["ru", "ru+rvc", "ru@en"].includes(v) }), h("span", {}, v)));
     cont.replaceChildren(...checks, h("button", { class: "btn primary small", disabled: busy, onclick: async () => {
@@ -535,42 +537,49 @@ function benchPanel(info, busy) {
 function settingsPanel(info) {
   if (!info.exists) return "";
   const s = info.settings || {};
+  // Сохранить и перерисовать, не сворачивая панели (renderStudioBody хранит раскрытые <details>)
   const save = async patch => {
     studio.info.settings = await api("POST", projUrl("/settings"), patch);
-    await refreshStudio();
+    studio.info = await api("GET", projUrl("")).catch(() => studio.info);
+    renderStudioBody();
   };
   const radio = (name, value, label) => h("label", { class: "radio" },
     h("input", { type: "radio", name, value, checked: s[name] === value, onchange: () => save({ [name]: value }) }), h("span", {}, label));
+  const check = (name, label, dflt = false) => h("label", { class: "radio" },
+    h("input", { type: "checkbox", checked: s[name] == null ? dflt : !!s[name], onchange: e => save({ [name]: e.target.checked }) }), h("span", {}, label));
   const glossary = h("textarea", { rows: 4, placeholder: "Alyx = Аликс\nGordon Freeman = Гордон Фримен\nCombine = Альянс" }, s.glossary || "");
   glossary.addEventListener("change", () => save({ glossary: glossary.value }));
-  const sel = (name, options) => h("select", { onchange: e => save({ [name]: e.target.value }) },
-    options.map(([v, l]) => h("option", { value: v, selected: s[name] === v }, l)));
-  const eng = info.engines?.tts || {};
+  const sel = (name, options, parse = v => v) => h("select", { onchange: e => save({ [name]: parse(e.target.value) }) },
+    options.map(([v, l]) => h("option", { value: v, selected: String(s[name]) === String(v) }, l)));
+  // Настройка в строку: подпись слева, список справа
+  const field = (label, control, hint) => h("label", { class: "field" }, h("span", {}, label, hint ? h("small", { class: "muted" }, hint) : ""), control);
   return h("details", { class: "panel" },
     h("summary", {}, "⚙ Настройки"),
     h("div", { class: "settings" },
       h("h3", {}, "Голос и исходное исполнение"),
       h("p", { class: "muted small" }, "Произношение рождается от русского донора, тембр персонажа переносит обученная модель; кто какой голос получает — на панели «Голоса». Какой движок звучит лучше — покажет стенд движков."),
-      sel("speech_source", [["auto", "Источник русской речи: автоматически"], ["ru", "Qwen-RU — русский донор по образцу"],
+      field("Источник русской речи", sel("speech_source", [["auto", "Автоматически"], ["ru", "Qwen-RU — русский донор по образцу"],
           ["custom", "CustomVoice — готовый диктор с инструкцией"], ["silero", "Silero — русские дикторы (некоммерческая лицензия)"],
-          ["omnivoice", "OmniVoice — донор, теги смеха и вздохов"]]),
-      sel("clone_engine", [["auto", "Быстрый путь эпизодических: автоматически"], ["ru", "Qwen-RU — клон с английской записи"],
-          ["voxcpm", "VoxCPM2 — клон с английской записи"], ["omnivoice", "OmniVoice — клон с английской записи"]]),
-      sel("episodic_mode", [["clone", "Эпизодические: клонировать с записи (ближе тембр, возможен акцент)"],
-          ["donor", "Эпизодические: донорский русский голос без акцента (тембр чужой)"]]),
-      h("button", { class: "btn primary", onclick: () => run("/preview", { count: 2 }) }, "Создать две пробы без установки"),
-      (info.previews || []).slice(-3).reverse().map(p => h("p", {}, h("a", {
-        href: `/api/projects/${encodeURIComponent(studio.gid)}/preview?label=${encodeURIComponent(p.label)}`,
-        target: "_blank", rel: "noopener" }, `Послушать ${p.count} пробы · ${p.engine} · ${p.label}`))),
-      sel("effects_mode", [["unknown", "Акустика не определена — проверить"], ["engine", "Эхо и окружение добавляет игра"],
-          ["dry", "Чистые записи без эффектов"], ["baked", "Эффекты записаны в файле — нужен импульс/отдельная дорожка"]]),
-      h("label", { class: "radio" }, h("input", { type: "checkbox", checked: s.preserve_performance !== false,
-        onchange: e => save({ preserve_performance: e.target.checked }) }),
-        h("span", {}, "Сохранять из оригинала изолированные вздохи, смех и кашель между словами")),
-      h("button", { class: "btn small", onclick: async () => {
+          ["omnivoice", "OmniVoice — донор, теги смеха и вздохов"]]), "главные персонажи и донорский путь"),
+      field("Эпизодические персонажи", sel("episodic_mode", [["clone", "Клонировать с записи — ближе тембр, возможен акцент"],
+          ["donor", "Донорский русский голос — без акцента, тембр чужой"]])),
+      field("Движок клонирования", sel("clone_engine", [["auto", "Автоматически"], ["ru", "Qwen-RU — клон с английской записи"],
+          ["voxcpm", "VoxCPM2 — клон с английской записи"], ["omnivoice", "OmniVoice — клон с английской записи"]]), "быстрый путь эпизодических"),
+      field("Главный персонаж от", sel("timbre_min_seconds", [[60, "60 секунд речи"], [90, "90 секунд"], [120, "2 минут"], [180, "3 минут"], [300, "5 минут"]], Number),
+          "и от 12 реплик; уровень обучения тембра — в шаге «Подготовка»"),
+      h("div", { class: "row" },
+        h("button", { class: "btn primary", onclick: () => run("/preview", { count: 2 }) }, "Создать две пробы без установки"),
+        (info.previews || []).slice(-3).reverse().map(p => h("a", { class: "btn small",
+          href: `/api/projects/${encodeURIComponent(studio.gid)}/preview?label=${encodeURIComponent(p.label)}`,
+          target: "_blank", rel: "noopener" }, `Послушать ${p.count} пробы · ${p.engine} · ${p.label}`))),
+      h("h3", {}, "Акустика оригинала"),
+      field("Эхо и окружение", sel("effects_mode", [["unknown", "Не определено — проверить"], ["engine", "Добавляет игра — озвучка чистая"],
+          ["dry", "Записи чистые, без эффектов"], ["baked", "Записаны в файле — нужен импульс или отдельная дорожка"]])),
+      check("preserve_performance", "Сохранять из оригинала изолированные вздохи, смех и кашель между словами", true),
+      h("div", { class: "row" }, h("button", { class: "btn small", onclick: async () => {
         const report = await api("GET", `/api/games/${encodeURIComponent(studio.gid)}/resources`);
         alert(`Проверено файлов: ${report.scanned}\nРесурсы: ${JSON.stringify(report.counts)}\nАдаптер: ${report.adapter || "нужен новый читатель формата"}\n${report.note}`);
-      } }, "Найти ресурсы игры"),
+      } }, "Найти ресурсы игры")),
       h("h3", {}, "Словарь имён и терминов"),
       h("p", { class: "muted small" }, "По одному на строку: «Английское = Русское». Переводчик будет использовать именно эти варианты."),
       glossary,
@@ -579,35 +588,16 @@ function settingsPanel(info) {
       h("h3", {}, "Откуда брать русский текст"),
       radio("text_source", "official", "Официальные русские субтитры (лучшее качество)"),
       radio("text_source", "llm", "Перевести всё нейросетью (долго: сначала распознаётся вся речь)"),
-      h("label", { class: "radio" }, h("input", { type: "checkbox", checked: !!s.translate_missing, onchange: e => save({ translate_missing: e.target.checked }) }),
-        h("span", {}, "Реплики без русских субтитров переводить нейросетью (иначе они остаются с оригинальным голосом)")),
+      check("translate_missing", "Реплики без русских субтитров переводить нейросетью (иначе они остаются с оригинальным голосом)"),
       h("details", { class: "advanced" }, h("summary", {}, "Расширенные (обычно трогать не нужно)"),
-        h("label", { class: "radio" }, h("input", { type: "checkbox", checked: s.judge !== false, onchange: e => save({ judge: e.target.checked }) }),
-          h("span", {}, "Контролёр качества (текст, похожесть, эмоция, смех/кашель)")),
-        h("label", { class: "radio" }, h("input", { type: "checkbox", checked: s.stable_voice !== false, onchange: e => save({ stable_voice: e.target.checked }) }),
-          h("span", {}, "Стабильный голос: один голос на персонажа во всех репликах, выбор варианта по сходству с его остальными репликами")),
-        h("label", { class: "radio" }, h("input", { type: "checkbox", checked: s.director !== false, onchange: e => save({ director: e.target.checked }) }),
-          h("span", {}, "Режиссёр: нейросеть слушает оригинал и готовит подачу каждой реплики (пунктуация, как играть)")),
-        h("label", { class: "radio" }, h("input", { type: "checkbox", checked: !!s.emotion_refs, onchange: e => save({ emotion_refs: e.target.checked }) }),
-          h("span", {}, "Образец голоса под эмоцию (живее, но голос персонажа может «плавать»)")),
-        h("label", { class: "radio" }, h("input", { type: "checkbox", checked: s.autofix !== false, onchange: e => save({ autofix: e.target.checked }) }),
-          h("span", {}, "Переозвучивать реплики, которые контролёр забраковал (больше вариантов)")),
-        h("label", { class: "radio" }, h("input", { type: "checkbox", checked: !!s.auto_install, onchange: e => save({ auto_install: e.target.checked }) }),
-          h("span", {}, "После подготовки сразу озвучить всю игру и установить без прослушивания")),
-        h("div", { class: "grid2" },
-          h("label", {}, "Обучать голос, если речи у персонажа от (секунд) ", sel("ft_min_seconds", [[60, "60"], [150, "150"], [300, "300"], [600, "600"]].map(([v, l]) => [String(v), l]))),
-          h("label", {}, "Способ обучения ", sel("ft_method", [["auto", "сам по видеопамяти"], ["full", "полное — лучше, ~4 ГБ на персонажа"], ["lora", "LoRA — ~40 МБ, чуть хуже"]]))),
-        h("label", { class: "radio" }, h("input", { type: "checkbox", checked: !!s.voice_transfer, onchange: e => save({ voice_transfer: e.target.checked }).then(renderStudioBody) }),
-          h("span", {}, "Дополнительно обучать RVC-голоса и переносить тембр (на часы дольше; основной способ и так берёт голос с записей персонажа)")),
-        h("div", { class: "grid2" },
-          h("label", {}, "Главных персонажей (полное обучение) ", sel("train_limit", [[3, "3"], [5, "5"], [8, "8"], [12, "12"], [20, "20"]].map(([v, l]) => [String(v), l]))),
-          h("label", {}, "Минут записей на главного ", sel("train_minutes", [[5, "5"], [8, "8"], [12, "12"], [20, "20"]].map(([v, l]) => [String(v), l]))),
-          h("label", {}, "Эпох обучения главного ", sel("train_epochs", [[150, "150 — быстрее"], [300, "300 — обычно"], [500, "500 — дольше, лучше"]].map(([v, l]) => [String(v), l]))),
-          h("label", {}, "Остальных обучать от (секунд речи) ", sel("train_min_seconds", [[60, "60"], [90, "90"], [120, "120"], [180, "180"], [999999, "не обучать"]].map(([v, l]) => [String(v), l]))),
-          h("label", {}, "Эпох для остальных ", sel("minor_epochs", [[100, "100"], [150, "150"], [200, "200"]].map(([v, l]) => [String(v), l]))),
-          h("label", {}, "Перевод ", sel("translator", [["auto", "Авто"], ["qwen3-14b", "Qwen3 14B"], ["qwen3-8b", "Qwen3 8B"], ["qwen3-4b", "Qwen3 4B"]]))),
-        h("label", {}, `Максимальное ускорение русской речи: ×${s.max_speedup}`,
-          h("input", { type: "range", min: 1, max: 1.5, step: 0.05, value: s.max_speedup, onchange: e => save({ max_speedup: parseFloat(e.target.value) }).then(renderStudioBody) }))),
+        check("judge", "Контролёр качества (текст, похожесть, эмоция, смех/кашель)", true),
+        check("director", "Режиссёр: нейросеть слушает оригинал и готовит подачу каждой реплики (пунктуация, как играть)", true),
+        check("autofix", "Переозвучивать реплики, которые контролёр забраковал (больше вариантов)", true),
+        check("auto_install", "После подготовки сразу озвучить всю игру и установить без прослушивания"),
+        field("Переводчик", sel("translator", [["auto", "Авто — по видеопамяти"], ["qwen3-14b", "Qwen3 14B"], ["qwen3-8b", "Qwen3 8B"], ["qwen3-4b", "Qwen3 4B"]])),
+        field("Пауза после смеха и вздоха", sel("event_gap", [[0.15, "0,15 с"], [0.3, "0,3 с"], [0.5, "0,5 с"]], Number), "перед русской речью"),
+        h("label", { class: "field" }, h("span", {}, `Максимальное ускорение русской речи: ×${s.max_speedup}`),
+          h("input", { type: "range", min: 1, max: 1.5, step: 0.05, value: s.max_speedup, onchange: e => save({ max_speedup: parseFloat(e.target.value) }) }))),
       h("div", { class: "row" },
         h("button", { class: "btn small", onclick: openSystem }, "Система и нейросети…"),
         h("button", { class: "btn small", title: "Сохранить готовую озвучку в файл .ruvoice — перенести на другой ПК или поделиться", onclick: () => runSteps(["export"]) }, "📦 Экспорт озвучки"),
@@ -651,7 +641,12 @@ function voicesPanel(info, busy) {
             ? h("select", { disabled: busy, onchange: async e => { await api("POST", projUrl("/voices/donor"), { char: r.id, donor: e.target.value }).catch(x => alert(x.message)); reload(); } },
                 !r.donor && h("option", { value: "", selected: true }, "— подберётся сам —"), donors.map(d => donorOpt(r, d)))
             : h("span", { class: "muted small" }, "клон с записи")),
-          h("td", {}, h("span", { class: `pill ${cls}`, title: r.timbre?.reason || "" }, label)),
+          h("td", {}, h("span", { class: `pill ${cls}`, title: r.timbre?.reason || "" }, label),
+            r.tier === "main" && r.timbre?.state !== "trained" && r.timbre?.reason !== "перенос тембра не установлен"
+              ? h("button", { class: "btn subtle small", disabled: busy, title: r.timbre?.reason || "", onclick: async () => {
+                  await api("POST", projUrl("/train-voice"), { char: r.id }).catch(x => alert(x.message)); pollStudio(); } }, "Обучить")
+              : "",
+            r.timbre?.reason && r.timbre.state !== "trained" ? h("div", { class: "muted small" }, r.timbre.reason) : ""),
           h("td", {}, h("div", { class: "row" }, r.samples.slice(0, 2).map((id, i) => playBtn("orig", id, `Оригинал ${i + 1}`)),
             r.donor && h("button", { class: "btn play gen", onclick: e => playUrl(e.currentTarget, `/api/donors/audio?id=${encodeURIComponent(r.donor.id)}&style=calm&t=${Date.now()}`) }, "▶ Донор"))));
       }))));

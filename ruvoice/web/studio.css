@@ -117,6 +117,13 @@ select {
 label.radio { display: flex; align-items: center; gap: 10px; font-weight: normal; margin: 6px 0; cursor: pointer; }
 label.radio input { width: auto; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+label.field { display: grid; grid-template-columns: minmax(180px, 240px) minmax(220px, 1fr); gap: 6px 14px; align-items: center; margin: 8px 0; font-weight: normal; }
+label.field > span { display: flex; flex-direction: column; gap: 2px; }
+label.field > span small { font-size: 12px; }
+label.field select, label.field input[type=range] { width: 100%; max-width: 520px; }
+.settings .row { margin: 12px 0 4px; }
+.settings a.btn { text-decoration: none; }
+@media (max-width: 720px) { label.field { grid-template-columns: 1fr; } }
 .grid2 label { display: flex; flex-direction: column; gap: 6px; }
 .system { margin-top: 30px; border-top: 1px solid var(--line); padding-top: 8px; }
 .tiers { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 12px 0; }

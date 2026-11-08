@@ -164,6 +164,13 @@ class CalibrateTests(TimbreCase):
         self.assertEqual(rv["n"], 6)
         self.assertTrue((self.p.dir / "voices" / "hero" / "rvc" / "calib" / "rvc" / "h11.wav").is_file())
 
+    def test_unmeasured_similarity_is_not_accepted(self):
+        self.sims = {"base": None, "rvc": None}
+        res = timbre.calibrate(self.jobs, self.gid, "hero", self.holdout())
+        self.assertFalse(res["accept"])
+        self.assertIn("похожесть", res["reason"])
+        self.assertTrue(self.p.get("voices")["hero"]["weak"])
+
     def test_no_holdout_is_rejected(self):
         res = timbre.calibrate(self.jobs, self.gid, "hero", [])
         self.assertFalse(res["accept"])
@@ -235,6 +242,34 @@ class TrainTests(TimbreCase):
         self.assertIsNone(v["index"])
         self.p.set("voices", {"hero": {"method": "rvc", "pth": "voices/hero/rvc/model.pth", "val": {"accept": False}, "weak": True}})
         self.assertIsNone(timbre.voice(self.p, "hero"))
+
+
+class RetrainRuleTests(TimbreCase):
+    """Подготовка и оценка времени считают одинаково: кого обучать (заново)."""
+
+    def test_needs_training_rules(self):
+        normal, deep = timbre.TIMBRE_LEVELS["normal"], timbre.TIMBRE_LEVELS["deep"]
+        self.assertTrue(timbre.needs_training(None, normal))
+        accepted = {"method": "rvc", "val": {"accept": True}, "weak": False, "epochs": 300}
+        self.assertFalse(timbre.needs_training(accepted, normal))
+        self.assertTrue(timbre.needs_training(accepted, deep))      # уровень вырос — обучить дольше
+        weak = {"method": "rvc", "val": {"accept": False}, "weak": True, "epochs": 300}
+        self.assertFalse(timbre.needs_training(weak, normal))       # на том же уровне заново не мучаем
+        self.assertTrue(timbre.needs_training(weak, deep))
+        self.assertTrue(timbre.needs_training({"method": "rvc", "val": None, "weak": True, "epochs": 300}, normal))
+
+    def test_plan_and_estimate_agree_on_todo(self):
+        (self.p.dir / "voices" / "hero" / "rvc").mkdir(parents=True)
+        (self.p.dir / "voices" / "hero" / "rvc" / "model.pth").write_bytes(b"pth")
+        self.p.set("voices", {"hero": {"method": "rvc", "pth": "voices/hero/rvc/model.pth", "val": {"accept": False}, "weak": True,
+                                       "epochs": 300, "reason": "похожесть не выросла"}})
+        with patch("ruvoice.engines.rvc_available", return_value=True):
+            plan = timbre.plan(self.jobs, self.gid)
+            est = timbre.estimate(self.jobs, self.gid)
+        hero = next(c for c in plan["planned"] if c["id"] == "hero")
+        self.assertFalse(hero["retrain"])
+        self.assertEqual(est["levels"]["normal"]["todo"], 0)
+        self.assertEqual(est["levels"]["deep"]["todo"], 1)
 
 
 class PlanTests(TimbreCase):
