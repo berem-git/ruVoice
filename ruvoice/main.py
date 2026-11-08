@@ -212,4 +212,7 @@ def _has_webview2() -> bool:
 
 
 if __name__ == "__main__":
+    # Перезапуск импортирует ruvoice.main и должен отпустить мьютекс этого процесса.
+    if __spec__ is not None:
+        sys.modules[__spec__.name] = sys.modules[__name__]
     main()
