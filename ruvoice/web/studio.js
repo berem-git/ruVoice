@@ -596,8 +596,9 @@ function settingsPanel(info) {
           href: `/api/projects/${encodeURIComponent(studio.gid)}/preview?label=${encodeURIComponent(p.label)}`,
           target: "_blank", rel: "noopener" }, `Послушать ${p.count} пробы · ${p.engine} · ${p.label}`))),
       h("h3", {}, "Акустика оригинала"),
-      field("Эхо и окружение", sel("effects_mode", [["unknown", "Не определено — проверить"], ["engine", "Добавляет игра — озвучка чистая"],
-          ["dry", "Записи чистые, без эффектов"], ["baked", "Записаны в файле — нужен импульс или отдельная дорожка"]])),
+      field("Эхо и окружение", sel("effects_mode", [["auto", "Автоматически — эхо и фон по хвосту каждой реплики"], ["engine", "Добавляет игра — озвучка чистая"],
+          ["dry", "Записи чистые, без эффектов"], ["baked", "Записаны в файле — переносить даже короткое эхо"]]),
+          "где в оригинале слышен хвост эха, русская реплика получает такой же"),
       check("preserve_performance", "Сохранять из оригинала изолированные вздохи, смех и кашель между словами", true),
       h("div", { class: "row" }, h("button", { class: "btn small", onclick: async () => {
         const report = await api("GET", `/api/games/${encodeURIComponent(studio.gid)}/resources`);
@@ -708,7 +709,8 @@ function lineCard(l) {
       l.info?.plan && h("span", { class: "tag", title: `источник ${l.info.plan.source}${l.info.plan.donor ? ", донор " + l.info.plan.donor : ""}` },
         l.info.plan.timbre ? "донор + тембр" : (l.info.plan.donor ? "донор" : "клон с записи")),
       judgeChip(l.info?.judge),
-    (l.info?.fit?.kept || []).length ? h("span", { class: "muted small", title: "Взято из оригинала и вклеено в русскую реплику" }, ` · из оригинала: ${l.info.fit.kept.join(", ")}`) : ""),
+    (l.info?.fit?.kept || []).length ? h("span", { class: "muted small", title: "Взято из оригинала и вклеено в русскую реплику" }, ` · из оригинала: ${l.info.fit.kept.join(", ")}`) : "",
+    l.info?.fit?.room ? h("span", { class: "muted small", title: `Эхо оригинала перенесено: спад ${l.info.fit.room.rt60} с, доля ${l.info.fit.room.wet}, фон ${l.info.fit.room.noise_db} дБ` }, ` · эхо ${l.info.fit.room.rt60} с`) : ""),
     h("div", { class: "line-grid" },
       h("div", {}, h("div", { class: "muted small" }, `Оригинал · ${(l.duration || 0).toFixed(1)} с`),
         h("div", { class: "en" }, l.en || h("i", { class: "muted" }, "текст не распознан")), playBtn("orig", l.id, "Оригинал")),

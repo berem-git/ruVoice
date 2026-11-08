@@ -75,7 +75,7 @@ def analyse(path: Path, words: list[dict], classify=None, effects: str = "engine
                 vocal_style.append(x["label"])
         if any(x not in {e["label"] for e in events} for x in vocal_style):
             warnings.append("Неречевой звук не изолирован: передаётся подачей, точное воспроизведение требует проверки")
-    if effects not in {"engine", "dry", "provided_stems"}:
+    if effects not in {"engine", "dry", "provided_stems", "auto", "unknown", "baked"}:
         warnings.append("Запечённые эффекты требуют отдельной дорожки или импульса помещения")
     feat = audio.speech_features(w, sr)
     return {"version": VERSION, "source": fingerprint(path), "duration": dur, "words": words,

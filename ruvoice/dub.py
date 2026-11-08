@@ -17,6 +17,7 @@ import re
 import threading
 import time
 import traceback
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -35,7 +36,7 @@ DEFAULT_SETTINGS = {
     "timbre_level": "normal",    # обучение тембра главных персонажей: off / fast / normal / deep (timbre.TIMBRE_LEVELS)
     "timbre_min_seconds": 120,   # главный персонаж — от стольких секунд речи (и от 12 реплик)
     "preserve_performance": True,
-    "effects_mode": "unknown",  # unknown / engine / dry / baked; explicit acoustic routing
+    "effects_mode": "auto",      # auto — эхо и фон по хвосту каждой реплики (acoustics); engine/dry — не накладывать; baked — ниже порог
     "text_source": "official",   # official — официальные русские субтитры; llm — перевести всё нейросетью
     "translate_missing": False,  # реплики без русских субтитров: False — оставить оригинальный голос, True — перевести
     "glossary": "",
@@ -1598,6 +1599,30 @@ class DubJobs:
         return res
 
     def _fit_line(self, p: Project, line: dict, wav: np.ndarray, sr: int, orig: np.ndarray, orig_sr: int,
+                  max_speedup: float) -> tuple[np.ndarray, dict]:
+        """Подогнать русскую речь под оригинал: эхо и фон оригинала (acoustics), смех/вздох/кашель по краям
+        и внутри оригинала сохраняются и вклеиваются (_fit_core)."""
+        from . import acoustics
+        settings = {**DEFAULT_SETTINGS, **(p.get("settings") or {})}
+        src = line.get("src") or {}
+        mode = src.get("effects", settings.get("effects_mode", "auto"))
+        room = None
+        if acoustics.wants_room(mode) and not (src.get("effect_stems") or {}).get("impulse"):
+            try:
+                room = acoustics.analyse_room(orig, orig_sr, mode)
+                if room:
+                    wav = acoustics.apply_room(wav, sr, room, seed=zlib.crc32(line["id"].encode()) & 0xFFFF)
+            except Exception as e:
+                print(f"акустика ({line['id']}): {e}")
+                room = None
+        fitted, info = self._fit_core(p, line, wav, sr, orig, orig_sr, max_speedup)
+        if room:
+            info = {**info, "room": room}
+            if acoustics.useful_noise(room.get("noise_db")):
+                fitted = acoustics.noise_bed(fitted, orig_sr, room["noise_db"], seed=zlib.crc32(line["id"].encode()) & 0xFFFF)
+        return fitted, info
+
+    def _fit_core(self, p: Project, line: dict, wav: np.ndarray, sr: int, orig: np.ndarray, orig_sr: int,
                   max_speedup: float) -> tuple[np.ndarray, dict]:
         """Подогнать русскую речь под оригинал; смех/вздох/кашель по краям оригинала сохраняются и приклеиваются."""
         if {**DEFAULT_SETTINGS, **(p.get("settings") or {})}.get("preserve_performance", True):
