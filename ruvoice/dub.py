@@ -88,8 +88,8 @@ class DubJobs:
         self._projects: dict[str, Project] = {}
         self._translator = None
         self._resumes = 0
+        self._cleanup_lock = threading.Lock()
         threading.Thread(target=self._run, daemon=True).start()
-        threading.Thread(target=self.collect_garbage, daemon=True).start()  # уборка при запуске
         threading.Thread(target=self._watch_resources, daemon=True).start()
 
     # --- прерванная задача: продолжить после падения или выключения ---
@@ -167,9 +167,10 @@ class DubJobs:
         """Убрать мусор во всех проектах (кроме того, что сейчас в работе) и в кэше; см. cleanup.py."""
         from . import cleanup
         from .project import project_id
-        busy = {project_id(self.current)} if self.current else set()
         try:
-            res = cleanup.all_garbage(dry=dry, skip=busy)
+            with self._cleanup_lock:
+                busy = {project_id(self.current)} if self.current else set()
+                res = cleanup.all_garbage(dry=dry, skip=busy)
         except Exception as e:
             print(f"уборка мусора: {e}")
             return {"bytes": 0, "projects": {}, "fixed_lines": 0}
@@ -318,12 +319,13 @@ class DubJobs:
         while True:
             gid, task, kw = self.q.get()
             st = self.state[gid]
-            if task in st["queued"]:
-                st["queued"].remove(task)
-            self.current, st["task"], st["done"], st["total"] = gid, task, 0, 0
-            st["produced"], st["purge"], st["paused"] = [], False, False
-            self.cancel_flag.clear()
-            self._pause_flag().clear()
+            with self._cleanup_lock:
+                if task in st["queued"]:
+                    st["queued"].remove(task)
+                st["produced"], st["purge"], st["paused"] = [], False, False
+                self.cancel_flag.clear()
+                self._pause_flag().clear()
+                self.current, st["task"], st["done"], st["total"] = gid, task, 0, 0
             self._mark_job(gid, task, kw)
             try:
                 from . import power

@@ -13,6 +13,31 @@ from ruvoice.dub import DubJobs
 from ruvoice.project import Project
 
 
+class CleanupSchedulingTests(unittest.TestCase):
+    def test_job_cannot_start_while_cleanup_owns_project_snapshot(self):
+        cleaning, release, started = threading.Event(), threading.Event(), threading.Event()
+
+        def cleanup(**kwargs):
+            cleaning.set()
+            release.wait(5)
+            return {"bytes": 0, "fixed_lines": 0}
+
+        with patch.object(DubJobs, "_watch_resources"), patch.object(DubJobs, "_mark_job"), \
+             patch.object(DubJobs, "clear_job"), patch.object(DubJobs, "_do_prepare", side_effect=lambda gid: started.set()), \
+             patch("ruvoice.power.apply_priority"), patch("ruvoice.cleanup.all_garbage", side_effect=cleanup):
+            jobs = DubJobs(None)
+            thread = threading.Thread(target=jobs.collect_garbage)
+            thread.start()
+            try:
+                self.assertTrue(cleaning.wait(2))
+                jobs.enqueue("test:cleanup", "prepare")
+                self.assertFalse(started.wait(0.1))
+            finally:
+                release.set()
+                thread.join(2)
+            self.assertTrue(started.wait(2))
+
+
 class ProjectCase(unittest.TestCase):
     """Проект во временной папке и DubJobs без фоновых потоков."""
 
