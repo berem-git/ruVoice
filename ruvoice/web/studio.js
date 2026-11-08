@@ -385,7 +385,9 @@ function stepSamples(info, generatedAll, busy, preparing) {
   const sm = info.samples;
   const v = sm.variant || {};
   const decided = generatedAll > 0;
-  const note = preparing ? h("p", { class: "muted small" }, "Подготовка ещё идёт: пробы появляются по мере обучения персонажей, уже готовые можно слушать.") : "";
+  const queued = (info.status.queued || []).includes("generate");
+  const note = preparing ? h("p", { class: "muted small" }, "Подготовка ещё идёт: пробы появляются по мере обучения персонажей, уже готовые можно слушать. ",
+    queued ? "Озвучка всей игры уже в очереди и начнётся сама после подготовки." : "Кнопки «Нравится — озвучить всю игру» и «Переделать пробы» появятся после подготовки.") : "";
   const blocks = (sm.chars || []).map(c => h("div", { class: "sample-char" },
     h("div", { class: "sample-head" }, h("b", {}, c.name),
       c.trained ? h("span", { class: "pill ok" }, "тембр обучен") : h("span", { class: "pill", title: c.reason || "" }, c.source ? `быстрый путь · ${c.source}` : "быстрый путь"),
