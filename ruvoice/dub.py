@@ -1951,82 +1951,17 @@ class DubJobs:
         if not only_char:
             self._finish(gid, "Пробы готовы — послушайте")
 
-    def _do_train_voice(self, gid: str, char: str, steps: int = 300, max_seconds: float = 720,
-                        measure: bool = True, **_):
-        """Обучить RVC-голос персонажа на его записях (до max_seconds речи) и измерить похожесть до/после."""
-        from . import asr, tts
-        p, report = self.project(gid), self._progress(gid)
+    def _do_train_voice(self, gid: str, char: str, **_):
+        """Обучить модель тембра персонажа (RVC) на его записях — timbre.train; контроль — после озвучки проб."""
+        from . import asr, timbre, tts
         if not rvc_available():
-            raise RuntimeError("RVC не установлен (runtime\\engines\\rvc)")
-        cands = [l for l in p.lines(char=char) if 1.5 <= (l["duration"] or 0) <= 12 and l["status"] != "skipped"]
-        if len(cands) < 3:
-            raise RuntimeError("У персонажа слишком мало реплик для обучения (нужно хотя бы 3)")
-        report("Подбор записей персонажа…")
-        cands = self._most_typical(p, cands[:400])
-        voice_dir = p.dir / "voices" / _safe(char)
-        ds = voice_dir / "dataset"
-        import shutil
-        shutil.rmtree(voice_dir, ignore_errors=True)
-        ds.mkdir(parents=True)
-        total = 0.0
-        for i, l in enumerate(cands):
-            w, sr = audio.read(p.dir / l["orig"])
-            w = audio.trim_silence(w, sr)
-            if len(w) < sr * 1.0:
-                continue
-            audio.write(ds / f"{i:04d}.wav", audio.resample(w, sr, 22050), 22050)
-            total += len(w) / sr
-            if total >= max_seconds:
-                break
-        if total < 20:
-            raise RuntimeError("Слишком мало чистой речи персонажа для обучения")
+            raise RuntimeError("Перенос тембра не установлен — «Система и нейросети» → «Среды движков»")
         self._release_translator()
         asr.unload()
         tts.unload()
-        started = time.time()
-        train_start = [None]
-
-        def on_progress(info):
-            step, tot = info.get("epoch", 0) or 0, info.get("total", steps)
-            if info.get("message"):
-                msg = f"Голос «{char}»: {info['message']}"
-            else:
-                msg = f"Обучение голоса «{char}»: эпоха {step}/{tot}"
-                if step and train_start[0]:
-                    left = (time.time() - train_start[0]) / step * (tot - step)
-                    msg += f", осталось ~{int(left // 60)} мин {int(left % 60)} с"
-            if step == 0 and info.get("phase") == "train" and train_start[0] is None:
-                train_start[0] = time.time()
-            if info.get("loss") is not None:
-                msg += f" · loss {info['loss']}"
-            report(msg, step, tot)
-
-        voices = p.get("voices") or {}
-        report(f"Обучение голоса «{char}»: {total / 60:.1f} мин записей, {steps} эпох…")
-        res = tts.train_voice_rvc(str(ds), str(voice_dir), f"{p.id}__{_safe(char)}", steps, on_progress)
-        entry = {"method": "rvc", "pth": str(Path(res["pth"]).relative_to(p.dir)),
-                 "index": str(Path(res["index"]).relative_to(p.dir)) if res.get("index") else None,
-                 "epochs": steps, "trained_at": time.time(), "dataset_seconds": round(total),
-                 "train_seconds": round(time.time() - started)}
-        shutil.rmtree(ds, ignore_errors=True)
-        voices[char] = entry
-        p.set("voices", voices)
-
-        # Замер: те же реплики голосом диктора и обученным голосом
-        test = [l for l in p.lines(char=char) if l["ru"] and 1.5 <= (l["duration"] or 0) <= 8][:3]
-        if test and measure:
-            report("Проверка: похожесть до и после обучения…")
-            engine = self._engine_for(gid)
-            try:
-                _, before = self._render(gid, p, char, test, engine, None, voice_dir / "before")
-                _, after = self._render(gid, p, char, test, engine, self._voice(p, char), voice_dir / "after")
-                voices[char].update(sim_before=before, sim_after=after)
-                p.set("voices", voices)
-            except Exception as e:
-                print(f"замер после обучения не удался: {e}")
-        v = voices[char]
-        gain = f", похожесть {v.get('sim_before')} → {v.get('sim_after')}" if v.get("sim_after") is not None else ""
-        self._finish(gid, f"Голос «{char}» обучен за {v['train_seconds'] // 60} мин{gain}")
+        row = timbre.train(self, gid, char)
+        name = next((c["name"] for c in self.project(gid).characters() if c["id"] == char), char)
+        self._finish(gid, f"Тембр «{name}» обучен за {row['train_seconds'] // 60} мин — {row['reason']}")
 
     def _do_events_pass(self, gid: str):
         """Для уже озвученных реплик: найти смех/вздохи/кашель по краям оригинала и переозвучить такие реплики

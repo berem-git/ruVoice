@@ -1,8 +1,17 @@
-"""Тембр персонажа: кто получает обученную RVC-модель (ступень 2 конвейера v2) и на каком уровне.
+"""Тембр персонажа (ступень 2 конвейера v2): кому обучать RVC-модель, на каком уровне, сколько это займёт,
+обучение и его контроль.
 
 Главный персонаж — тот, у кого речи не меньше `timbre_min_seconds` и реплик не меньше 12: ему обучается
-своя модель тембра. Остальные — эпизодические, идут быстрым путём (клонирование или донорский голос).
-Пользователь может переопределить уровень вручную («обучать» / «эпизодический»)."""
+своя модель тембра на его же записях (RVC/Applio в отдельном процессе). Остальные — эпизодические, идут
+быстрым путём (клонирование или донорский голос). Пользователь может переопределить уровень вручную
+(«обучать» / «эпизодический»). Обученная модель принимается только после контроля (calibrate) на
+контрольных репликах, которые в обучение не попали: иначе остаётся «слабой» и не используется."""
+import json
+import shutil
+import time
+from pathlib import Path
+
+from .paths import DATA_DIR
 
 TIMBRE_LEVELS = {
     "off": None,
@@ -11,6 +20,12 @@ TIMBRE_LEVELS = {
     "deep": {"name": "Долго", "epochs": 500, "minutes": 25},
 }
 MIN_LINES = 12
+HOLDOUT = 6                   # контрольных реплик вне обучения
+MIN_DATASET_SEC = 45
+SR = 40000                    # частота обучения RVC (HiFi-GAN f0G40k)
+DISK_GB_PER_VOICE = 0.06
+RVC_SEC_PER_MIN_EPOCH = 6.0   # секунд обучения на минуту записей за эпоху (замеряется в задаче 12 плана)
+SPEED_FILE = DATA_DIR / "train_speed.json"
 
 
 def tier(char: dict, settings: dict, override: str | None) -> str:
@@ -23,3 +38,184 @@ def tier(char: dict, settings: dict, override: str | None) -> str:
         return "episodic"
     enough = (char.get("seconds") or 0) >= float(settings.get("timbre_min_seconds", 120))
     return "main" if enough and (char.get("lines") or 0) >= MIN_LINES else "episodic"
+
+
+def level(settings: dict) -> dict | None:
+    return TIMBRE_LEVELS.get(settings.get("timbre_level", "normal"))
+
+
+# --- скорость обучения на этом компьютере ---
+
+def speed_rate() -> float:
+    """Секунд обучения на минуту записей за эпоху: медиана прошлых обучений RVC, до первого — константа."""
+    try:
+        hist = json.loads(SPEED_FILE.read_text("utf-8"))
+        vals = sorted(float(x["rate"]) for x in hist[-10:] if x.get("method") == "rvc" and x.get("rate"))
+        if vals:
+            return vals[len(vals) // 2]
+    except Exception:
+        pass
+    return RVC_SEC_PER_MIN_EPOCH
+
+
+def record_speed(rate: float, batch: int):
+    try:
+        hist = json.loads(SPEED_FILE.read_text("utf-8")) if SPEED_FILE.exists() else []
+    except Exception:
+        hist = []
+    hist = (hist + [{"rate": round(rate, 2), "method": "rvc", "batch": batch, "at": time.time()}])[-20:]
+    SPEED_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SPEED_FILE.write_text(json.dumps(hist), "utf-8")
+
+
+# --- обученные модели ---
+
+def entry(p, char: str) -> dict | None:
+    return (p.get("voices") or {}).get(char)
+
+
+def voice(p, char: str) -> dict | None:
+    """Принятая модель тембра с абсолютными путями или None (не обучена, не прошла контроль, файла нет)."""
+    v = entry(p, char)
+    if not v or v.get("method") != "rvc" or not v.get("val") or v.get("weak") or not v.get("pth"):
+        return None
+    pth = p.dir / v["pth"]
+    if not pth.exists():
+        return None
+    idx = (p.dir / v["index"]) if v.get("index") else None
+    return {"method": "rvc", "pth": str(pth), "index": str(idx) if idx and idx.exists() else None}
+
+
+def mains(p, settings: dict) -> list[dict]:
+    """Главные персонажи (с учётом ручных переопределений), по убыванию числа реплик."""
+    over = p.get("timbre_override") or {}
+    chars = [c for c in p.characters() if tier(c, settings, over.get(c["id"])) == "main"]
+    chars.sort(key=lambda c: -(c["lines"] or 0))
+    return chars
+
+
+def plan(jobs, gid: str) -> dict:
+    """Кого обучать на текущем уровне: список с оценкой времени, кто уже обучен или слаб."""
+    from . import engines
+    p, s = jobs.project(gid), jobs.settings(gid)
+    lvl = level(s)
+    key = s.get("timbre_level", "normal")
+    if not lvl:
+        return {"level": key, "ready": engines.rvc_available(), "planned": [], "total_minutes": 0, "skipped": []}
+    rate = speed_rate()
+    planned = []
+    for c in mains(p, s):
+        v = entry(p, c["id"])
+        minutes_used = min((c["seconds"] or 0) / 60, lvl["minutes"])
+        planned.append({"id": c["id"], "name": c["name"], "minutes": round((c["seconds"] or 0) / 60, 1),
+                        "trained": voice(p, c["id"]) is not None, "weak": bool(v and v.get("weak")),
+                        "reason": (v or {}).get("reason"), "epochs": lvl["epochs"], "max_seconds": lvl["minutes"] * 60,
+                        "est_minutes": round(minutes_used * lvl["epochs"] * rate / 60)})
+    ids = {c["id"] for c in planned}
+    return {"level": key, "ready": engines.rvc_available(), "planned": planned,
+            "total_minutes": sum(c["est_minutes"] for c in planned if not c["trained"]),
+            "skipped": [c["name"] for c in p.characters() if c["id"] not in ids][:12]}
+
+
+def estimate(jobs, gid: str) -> dict:
+    """Для студии: сколько персонажей, времени и места займёт каждый уровень."""
+    from . import engines
+    p, s = jobs.project(gid), jobs.settings(gid)
+    rate = speed_rate()
+    out = {}
+    for key, lvl in TIMBRE_LEVELS.items():
+        if lvl is None:
+            out[key] = {"name": "Без обучения", "chars": 0, "todo": 0, "minutes": 0, "disk_gb": 0, "names": []}
+            continue
+        chars = mains(p, {**s, "timbre_level": key})
+        todo = [c for c in chars if voice(p, c["id"]) is None]
+        minutes = sum(min((c["seconds"] or 0) / 60, lvl["minutes"]) * lvl["epochs"] * rate / 60 for c in todo)
+        out[key] = {"name": lvl["name"], "chars": len(chars), "todo": len(todo), "minutes": round(minutes),
+                    "disk_gb": round(DISK_GB_PER_VOICE * len(chars), 2), "names": [c["name"] for c in chars][:6]}
+    return {"levels": out, "current": s.get("timbre_level", "normal"), "ready": engines.rvc_available()}
+
+
+# --- данные и обучение ---
+
+def dataset(jobs, p, char: str, max_seconds: float) -> tuple[list[Path], list[dict], float]:
+    """Записи персонажа для обучения (WAV 40 кГц в voices/<char>/rvc/dataset) и контрольные реплики вне обучения.
+    Берутся реплики от 1 с после обрезки тишины, не пропущенные, где по звуку речь (speech ≥ 0.5), ближе к центру
+    голоса (jobs._most_typical); контроль — 6 реплик с русским текстом длиной 2–7 с после первых восьми."""
+    from . import audio
+    from .dub import _safe
+    cands = [l for l in p.lines(char=char)
+             if l["status"] != "skipped" and l["orig"] and (l["duration"] or 0) >= 1.0
+             and ((l["info"] or {}).get("speech") is None or (l["info"] or {}).get("speech") >= 0.5)]
+    cands = jobs._most_typical(p, cands[:400])
+    holdout = [l for l in cands[8:] if l["ru"] and 2.0 <= (l["duration"] or 0) <= 7.0][:HOLDOUT]
+    hold_ids = {l["id"] for l in holdout}
+    ddir = p.dir / "voices" / _safe(char) / "rvc" / "dataset"
+    shutil.rmtree(ddir, ignore_errors=True)
+    ddir.mkdir(parents=True)
+    files, total = [], 0.0
+    for l in cands:
+        if l["id"] in hold_ids:
+            continue
+        w, sr = audio.read(p.dir / l["orig"])
+        w = audio.trim_silence(w, sr)
+        if len(w) < sr * 1.0:
+            continue
+        f = ddir / f"{_safe(l['id'])}.wav"
+        audio.write(f, audio.resample(w, sr, SR), SR)
+        files.append(f)
+        total += len(w) / sr
+        if total >= max_seconds:
+            break
+    return files, holdout, total
+
+
+def train(jobs, gid: str, char: str) -> dict:
+    """Обучить модель тембра персонажа на уровне из настроек; запись voices[char] ждёт контроля (calibrate)."""
+    from . import accel, tts
+    from .dub import _safe
+    p, s, report = jobs.project(gid), jobs.settings(gid), jobs._progress(gid)
+    lvl = level(s)
+    if not lvl:
+        raise RuntimeError("Обучение тембра выключено в настройках")
+    name = next((c["name"] for c in p.characters() if c["id"] == char), char)
+    report(f"Тембр «{name}»: подбор записей…")
+    files, holdout, total = dataset(jobs, p, char, lvl["minutes"] * 60)
+    if total < MIN_DATASET_SEC:
+        raise RuntimeError(f"Слишком мало чистой речи персонажа для обучения тембра (нужно от {MIN_DATASET_SEC} с)")
+    vdir = p.dir / "voices" / _safe(char) / "rvc"
+    try:
+        vram = accel.info().get("vram_gb") or 0
+    except Exception:
+        vram = 0
+    batch = 8 if vram >= 12 else 4
+    started, train_started = time.time(), [None]
+
+    def on_progress(info: dict):
+        step, tot = info.get("epoch", 0) or 0, info.get("total", lvl["epochs"])
+        if info.get("message"):
+            report(f"Тембр «{name}»: {info['message']}")
+            return
+        if info.get("phase") == "train" and train_started[0] is None:
+            train_started[0] = time.time()
+        msg = f"Обучение тембра «{name}»: эпоха {step}/{tot}"
+        if step and train_started[0]:
+            left = (time.time() - train_started[0]) / step * (tot - step)
+            msg += f", осталось ~{int(left // 60)} мин {int(left % 60)} с"
+        report(msg, step, tot)
+    report(f"Обучение тембра «{name}»: {total / 60:.1f} мин записей, {lvl['epochs']} эпох…")
+    res = tts.train_voice_rvc(str(files[0].parent), str(vdir), f"{p.id}__{_safe(char)}", lvl["epochs"], on_progress,
+                              batch_size=batch)
+    if jobs.cancel_flag.is_set():
+        raise RuntimeError("остановлено")
+    took = time.time() - started
+    record_speed(took / max(total / 60 * lvl["epochs"], 1e-6), batch)
+    rel = lambda path: Path(path).relative_to(p.dir).as_posix() if path else None
+    row = {"method": "rvc", "pth": rel(res["pth"]), "index": rel(res.get("index")), "epochs": lvl["epochs"],
+           "dataset_seconds": round(total), "train_seconds": round(took), "trained_at": time.time(),
+           "holdout": [l["id"] for l in holdout], "val": None, "weak": True, "reason": "ждёт контроля"}
+    (vdir / "meta.json").write_text(json.dumps(row, ensure_ascii=False, indent=1), "utf-8")
+    voices = p.get("voices") or {}
+    voices[char] = row
+    p.set("voices", voices)
+    shutil.rmtree(files[0].parent, ignore_errors=True)
+    return row
