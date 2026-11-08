@@ -1,7 +1,9 @@
-"""Синтез русской речи голосом персонажа — один конвейер:
-  • речь: русское дообучение Qwen3-TTS (ударения, голос по отпечатку с записей персонажа; образец под эмоцию);
-    запасной — CustomVoice (готовые дикторы + инструкция);
-  • по желанию тембр: обученная RVC-модель персонажа (engines/worker.py, отдельный процесс)."""
+"""Синтез русской речи (ступень 1 конвейера v2) и перенос тембра (ступень 2).
+
+Бэкенды речи (engines.BACKENDS): `ru` — русское дообучение Qwen3-TTS (ударения; голос с русского донора по
+образцу и расшифровке, либо с английской записи по отпечатку), `custom` — CustomVoice (диктор + инструкция),
+`silero` — Silero v5.6 (носители русского), `voxcpm` и `omnivoice` — процессы-работники со своими средами.
+Тембр персонажа переносит обученная RVC-модель (engines/worker.py, отдельный процесс)."""
 import contextlib
 import io
 import tempfile
@@ -57,7 +59,6 @@ def unload():
     with _lock:
         _model, _model_key = None, None
         _prompts.clear()
-        _attached.clear()
     client.stop()
     import gc
     gc.collect()
@@ -90,7 +91,7 @@ def _custom_generate(texts, refs, max_seconds, params) -> list[tuple[np.ndarray,
 
 def _ru_prompt(ref_audio: str, ref_text: str | None):
     """Отпечаток голоса по образцу (x-vector). С ref_text модель ещё и подражает манере образца (ICL) —
-    на английских записях это возвращает акцент, поэтому по умолчанию только отпечаток."""
+    так работает русский донор; на английских записях это возвращает акцент, поэтому там только отпечаток."""
     key = (ref_audio, ref_text)
     with _lock:
         if key not in _prompts:
@@ -101,51 +102,27 @@ def _ru_prompt(ref_audio: str, ref_text: str | None):
         return _prompts[key]
 
 
-_attached: set[str] = set()
-
-
-def _use_voice(ref: dict | None):
-    """Включить дообученный под персонажа адаптер (ref["voice"], ref["name"]) или чистую модель."""
-    from . import ttsft
-    talker = _model.model.talker
-    name = (ref or {}).get("name") if (ref or {}).get("voice") else None
-    if name and name not in _attached:
-        ttsft.attach(talker, ref["voice"], name)
-        _attached.add(name)
-    if _attached:
-        ttsft.activate(talker, name)
-
-
-def _full_generate(texts, ref, max_seconds, params) -> list[tuple[np.ndarray, int]]:
-    """Полностью дообученная под персонажа модель (ref["ckpt"], диктор ref["speaker"])."""
-    _load(ref["ckpt"])
-    with _lock:
-        limit = int(max(max_seconds) * TOKENS_PER_SEC) + 24
-        wavs, sr = _model.generate_custom_voice(text=texts, speaker=[ref["speaker"]] * len(texts),
-                                                language=["Russian"] * len(texts), max_new_tokens=limit,
-                                                temperature=float(params.get("temperature", 0.8)), repetition_penalty=1.05)
-    return [(np.asarray(w, dtype=np.float32).reshape(-1), sr) for w in wavs]
-
-
 def _ru_generate(texts, refs, max_seconds, params) -> list[tuple[np.ndarray, int]]:
-    if refs and refs[0].get("ckpt"):
-        return _full_generate(texts, refs[0], max_seconds, params)
+    """refs[i] = {"audio", "text", "language"}: русский образец с текстом — подражание манере (ICL),
+    английская запись персонажа — только отпечаток голоса (x-vector), чтобы не тянуть акцент."""
     load_ru()
-    icl = bool(params.get("icl"))
-    _use_voice(refs[0] if refs else None)  # реплики одного вызова — одного персонажа
-    prompts = [_ru_prompt(r["audio"], r.get("text") if icl or (r.get("identity") and r.get("language") == "ru") else None) for r in refs]
-    # Дообученный адаптер учился на раскладке без явного языка (language=auto: 3 служебных токена вместо 4) —
-    # с токеном «Russian» он ломает речь; язык модель и так берёт из русского текста
-    lang = params.get("language") or ("auto" if any(r.get("voice") for r in refs) else "Russian")
+    prompts = [_ru_prompt(r["audio"], r.get("text") if r.get("text") and r.get("language") == "ru" else None)
+               for r in refs]
     with _lock:
         limit = int(max(max_seconds) * TOKENS_PER_SEC) + 24
         # подвыборка кодов тембра (sub-talker) по умолчанию 0.9 — главный источник «плавающего» голоса между
         # репликами; интонацию задаёт основной поток, поэтому тембр можно держать строже
         extra = {k: params[k] for k in ("subtalker_temperature", "top_k", "top_p", "subtalker_top_k") if k in params}
-        wavs, sr = _model.generate_voice_clone(text=texts, language=[lang] * len(texts), voice_clone_prompt=prompts,
+        wavs, sr = _model.generate_voice_clone(text=texts, language=["Russian"] * len(texts), voice_clone_prompt=prompts,
                                                max_new_tokens=limit, temperature=float(params.get("temperature", 0.8)),
                                                repetition_penalty=1.05, **extra)
     return [(np.asarray(w, dtype=np.float32).reshape(-1), sr) for w in wavs]
+
+
+def _silero_generate(texts, refs) -> list[tuple[np.ndarray, int]]:
+    """Silero v5.6: refs[i] = {"speaker": aidar|eugene|baya|kseniya|xenia}; текст с «+» перед ударной гласной."""
+    from . import basevoices
+    return [basevoices.synth(text, (ref or {}).get("speaker") or "xenia") for text, ref in zip(texts, refs)]
 
 
 def synthesize(engine: str, texts: list[str], refs: list[dict], max_seconds: list[float],
@@ -174,12 +151,14 @@ def synthesize(engine: str, texts: list[str], refs: list[dict], max_seconds: lis
                     "max_seconds": seconds, "seed": seed})
                 outputs.append(audio.read(dst))
         return outputs
-    if engine == "ru":  # refs[i] = {"audio": образец голоса персонажа, "text": его расшифровка (для ICL)}
+    if engine == "ru":  # refs[i] = {"audio": образец голоса, "text": его расшифровка, "language": "ru"|"en"}
         texts = [accent.mark(t, "acute") for t in texts]
         return _ru_generate(texts, refs, max_seconds, params)
     if engine == "custom":
         texts = [accent.mark(t, "custom") for t in texts]
         return _custom_generate(texts, refs, max_seconds, params)
+    if engine == "silero":
+        return _silero_generate([accent.mark(t, "silero") for t in texts], refs)
     raise RuntimeError(f"Неизвестный движок речи {engine}")
 
 

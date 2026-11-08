@@ -173,7 +173,7 @@ class IdentityTests(unittest.TestCase):
     def test_russian_anchor_enables_icl_but_english_reference_does_not(self):
         model = Mock()
         model.generate_voice_clone.return_value = ([np.zeros(100)], 24000)
-        with patch.object(tts, '_model', model), patch.object(tts, 'load_ru'), patch.object(tts, '_use_voice'), \
+        with patch.object(tts, '_model', model), patch.object(tts, 'load_ru'), \
              patch.object(tts, '_ru_prompt', return_value=object()) as prompt:
             tts._ru_generate(['Привет'], [{'audio': 'en.wav', 'text': 'Hello'}], [3], {})
             prompt.assert_called_with('en.wav', None)

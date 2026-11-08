@@ -1,23 +1,21 @@
-"""Базовые русские голоса (Silero TTS v4, 5 дикторов — носители русского).
+"""Базовые русские голоса (Silero TTS v5.6, 5 дикторов — носители русского).
 
 Зачем: модели клонирования голоса переносят в русскую речь английскую фонетику образца — получается
-«американец говорит по-русски». В режиме «без акцента» русская речь сначала строится с образца
-русского диктора (чистое произношение), а затем Seed-VC переносит на неё тембр персонажа.
-Базовый голос для персонажа подбирается автоматически — ближайший по эмбеддингу диктора."""
-import os
+«американец говорит по-русски». Silero — источник чистого русского произношения (ступень 1 конвейера v2),
+тембр персонажа на него переносит RVC. Диктор персонажу подбирается по полу и отпечатку голоса.
+Лицензия моделей Silero — CC BY-NC 4.0 (некоммерческая), поэтому бэкенд включается только явным выбором."""
 import re
 import threading
-import urllib.request
 
 import numpy as np
 
-from . import audio
-from .paths import DATA_DIR, PROJECT_DIR
+from . import audio, models
+from .paths import DATA_DIR
 
-MODEL = PROJECT_DIR / "models" / "silero-tts-ru" / "v4_ru.pt"
-URL = "https://models.silero.ai/models/tts/ru/v4_ru.pt"
+MODEL = models.local_dir("silero-ru") / "v5_6_ru.pt"
 SR = 48000
 SPEAKERS = {"aidar": "мужской", "eugene": "мужской", "baya": "женский", "kseniya": "женский", "xenia": "женский"}
+_GENDER = {"male": "мужской", "female": "женский"}
 CLIPS_DIR = DATA_DIR / "base_voices"
 # Нейтральный текст для образцов (свой, без имён и цифр): длинный — для Qwen, короткий — для F5/Chatterbox/XTTS
 TEXT_LONG = ("Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, "
@@ -37,19 +35,12 @@ def available() -> bool:
     return MODEL.exists()
 
 
-def download():
-    MODEL.parent.mkdir(parents=True, exist_ok=True)
-    part = MODEL.with_suffix(".part")
-    urllib.request.urlretrieve(URL, part)
-    os.replace(part, MODEL)
-
-
 def _load():
     global _model
     with _lock:
         if _model is None:
             if not available():
-                download()
+                models.download("silero-ru")
             import torch
             imp = torch.package.PackageImporter(str(MODEL))
             _model = imp.load_pickle("tts_models", "model")
@@ -104,9 +95,11 @@ def embeddings() -> dict[str, np.ndarray]:
     return embs
 
 
-def pick_for(profile_emb: np.ndarray | None) -> str:
-    """Базовый голос, ближайший к голосу персонажа (по умолчанию — xenia)."""
+def pick_for(profile_emb: np.ndarray | None, gender: str | None = None) -> str:
+    """Диктор, ближайший к голосу персонажа; gender («male»/«female») ограничивает выбор полом.
+    Без отпечатка — aidar для мужского голоса, иначе xenia."""
+    pool = [k for k, g in SPEAKERS.items() if gender not in _GENDER or g == _GENDER[gender]]
     if profile_emb is None:
-        return "xenia"
+        return "aidar" if gender == "male" else "xenia"
     embs = embeddings()
-    return max(embs, key=lambda k: float(np.dot(embs[k], profile_emb)))
+    return max(pool, key=lambda k: float(np.dot(embs[k], profile_emb)))

@@ -14,10 +14,11 @@ GB = 2**30
 STD = ["*.json", "*.safetensors", "*.txt", "*.model", "*.tiktoken", "*.yaml", "vocab*", "speech_tokenizer/*"]
 
 
-def _m(name, repo, gb, role, file=None, patterns=None, required=None):
-    """required — файлы, по которым модель считается скачанной (по умолчанию все не-glob из patterns)."""
+def _m(name, repo, gb, role, file=None, patterns=None, required=None, url=None):
+    """required — файлы, по которым модель считается скачанной (по умолчанию все не-glob из patterns);
+    url — прямая ссылка на один файл (не Hugging Face), тогда repo=None и папка — models\\<ключ>."""
     return {"name": name, "repo": repo, "file": file, "gb": gb, "role": role, "patterns": patterns or STD,
-            "required": required}
+            "required": required, "url": url}
 
 
 # роль: tts — речь, llm — перевод, asr — распознавание, judge — контролёр качества и подбор голосов
@@ -27,10 +28,11 @@ ALL = {
                      required=["config.json", "model.safetensors", "audiovae.pth", "tokenizer.json"]),
     "tts-ru": _m("Русская речь голосом персонажа (Qwen3-TTS 1.7B, русское дообучение с ударениями)",
                  "siriusfreak/qwen3-tts-12hz-1.7b-ru-stress-cf", 4.3, "tts"),
-    "tts-tok": _m("Токенайзер речи Qwen3-TTS (для дообучения голосов)", "Qwen/Qwen3-TTS-Tokenizer-12Hz", 0.7, "tts",
-                  patterns=["*.json", "*.safetensors"], required=["model.safetensors", "config.json"]),
     "tts-custom": _m("Запасная речь: Qwen3-TTS 1.7B CustomVoice (готовые дикторы + инструкция)", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
                      4.3, "tts"),
+    "silero-ru": _m("Silero TTS v5.6 — русский диктор (некоммерческая лицензия CC BY-NC)", None, 0.07, "tts",
+                    url="https://models.silero.ai/models/tts/ru/v5_6_ru.pt", file="v5_6_ru.pt"),
+    "omnivoice": _m("OmniVoice — русский донор и теги смеха/вздохов", "k2-fsa/OmniVoice", 2.5, "tts"),
     "llm-32b-q6": _m("Режиссёр и перевод, студия (Qwen3 32B, Q6 — почти без потерь)", "Qwen/Qwen3-32B-GGUF", 25.0, "llm",
                      file="Qwen3-32B-Q6_K.gguf"),
     "llm-32b": _m("Режиссёр и перевод, ультра (Qwen3 32B)", "Qwen/Qwen3-32B-GGUF", 18.4, "llm", file="Qwen3-32B-Q4_K_M.gguf"),
@@ -59,32 +61,32 @@ ALL = {
 JUDGES = ["asr", "judge-emotion8", "judge-events", "judge-ve", "judge-ecapa", "judge-pron"]
 TIERS = {
     "studio": {
-        "name": "Студия", "models": ["tts-ru", "tts-tok", "llm-32b-q6"] + JUDGES,
+        "name": "Студия", "models": ["tts-ru", "llm-32b-q6"] + JUDGES,
         "needs": "Видеокарта с 32 ГБ видеопамяти и больше (RTX 5090, профессиональные 48 ГБ)",
         "desc": "Самый сильный режиссёр подачи, перевод и разбор «кто говорит» — Qwen3 32B почти без потерь качества; "
                 "5 вариантов каждой реплики на выбор контролёру.",
         "vram": 30,
     },
     "ultra": {
-        "name": "Ультра", "models": ["tts-ru", "tts-tok", "llm-32b"] + JUDGES,
+        "name": "Ультра", "models": ["tts-ru", "llm-32b"] + JUDGES,
         "needs": "Видеокарта с 24 ГБ видеопамяти и больше (RTX 3090/4090)",
         "desc": "Режиссёр подачи и перевод моделью вдвое больше (Qwen3 32B) — точнее интонации и имена; "
                 "5 вариантов каждой реплики на выбор контролёру.",
         "vram": 22,
     },
     "max": {
-        "name": "Максимум", "models": ["tts-ru", "tts-tok", "llm-14b"] + JUDGES,
+        "name": "Максимум", "models": ["tts-ru", "llm-14b"] + JUDGES,
         "needs": "Видеокарта с 14 ГБ видеопамяти и больше",
         "desc": "Русская речь голосом персонажа (по его записям), режиссёр подачи и перевод (Qwen3 14B), контролёр качества.",
         "vram": 14,
     },
     "quality": {
-        "name": "Качество", "models": ["tts-ru", "tts-tok", "llm-8b", "asr", "judge-emotion8", "judge-events", "judge-ve", "judge-ecapa", "judge-pron"],
+        "name": "Качество", "models": ["tts-ru", "llm-8b", "asr", "judge-emotion8", "judge-events", "judge-ve", "judge-ecapa", "judge-pron"],
         "needs": "Видеокарта с 8 ГБ видеопамяти и больше",
         "desc": "Та же речь, перевод моделью поменьше. ~2 с на реплику.",
     },
     "balanced": {
-        "name": "Баланс", "models": ["tts-ru", "tts-tok", "llm-4b", "asr", "judge-events", "judge-ve", "judge-ecapa", "judge-pron"],
+        "name": "Баланс", "models": ["tts-ru", "llm-4b", "asr", "judge-events", "judge-ve", "judge-ecapa", "judge-pron"],
         "needs": "Видеокарта с 6–8 ГБ видеопамяти",
         "desc": "Та же речь, лёгкий перевод, контролёр без оценки эмоций. ~2 с на реплику.",
     },
@@ -95,7 +97,8 @@ _lock = threading.Lock()
 
 
 def local_dir(key: str) -> Path:
-    return MODELS_DIR / ALL[key]["repo"].split("/")[1]
+    repo = ALL[key]["repo"]
+    return MODELS_DIR / (repo.split("/")[1] if repo else key)
 
 
 def path(key: str) -> Path | None:
@@ -183,9 +186,17 @@ def status(accel_info: dict | None = None) -> dict:
 
 def download(key: str):
     os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
-    from huggingface_hub import hf_hub_download, snapshot_download
     m = ALL[key]
     d = local_dir(key)
+    if m.get("url"):  # один файл по прямой ссылке (Silero): качаем в .part, потом переименовываем
+        import urllib.request
+        d.mkdir(parents=True, exist_ok=True)
+        dest = d / m["file"]
+        part = dest.with_suffix(dest.suffix + ".part")
+        urllib.request.urlretrieve(m["url"], str(part))
+        os.replace(part, dest)
+        return
+    from huggingface_hub import hf_hub_download, snapshot_download
     if m["file"]:
         hf_hub_download(m["repo"], m["file"], local_dir=d)
     else:
