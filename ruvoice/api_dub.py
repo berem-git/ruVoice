@@ -380,12 +380,37 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
             raise HTTPException(404, "Нет звука")
         return FileResponse(p.dir / rel, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
-    @r.post("/projects/{gid:path}/bench")
-    def bench(gid: str, body: dict | None = None):
-        """Контрольная сцена: постоянный набор реплик текущим способом + оценка (для сравнения способов)."""
+    @r.get("/projects/{gid:path}/enginebench/variants")
+    def enginebench_variants(gid: str):
+        """Готовые варианты стенда: источники речи (+rvc, если у кого-то обучен тембр) и клонировщики @en."""
+        from . import enginebench, timbre
+        p = _project(gid)
+        has_timbre = any(timbre.voice(p, c["id"]) for c in p.characters())
+        return {"variants": enginebench.variants_available(timbre=has_timbre)}
+
+    @r.post("/projects/{gid:path}/enginebench")
+    def enginebench_run(gid: str, body: dict | None = None):
+        """Прогон стенда движков по выбранным вариантам (в очередь задач)."""
+        from . import enginebench
         _project(gid)
-        dub.enqueue(gid, "bench", label=(body or {}).get("label"))
+        variants = [str(v) for v in ((body or {}).get("variants") or []) if v]
+        if not variants:
+            raise HTTPException(400, "Выберите хотя бы один вариант стенда")
+        try:
+            for v in variants:
+                enginebench.parse_variant(v)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        dub.enqueue(gid, "enginebench", variants=variants, label=(body or {}).get("label"))
         return dub.status(gid)
+
+    @r.get("/projects/{gid:path}/bench")
+    def bench_page(gid: str, label: str):
+        p = _project(gid)
+        target = (p.dir / "bench" / label / "index.html").resolve()
+        if not target.is_relative_to((p.dir / "bench").resolve()) or not target.is_file():
+            raise HTTPException(404, "Нет такого прогона стенда")
+        return FileResponse(target, media_type="text/html")
 
     @r.get("/projects/{gid:path}/review")
     def review(gid: str):

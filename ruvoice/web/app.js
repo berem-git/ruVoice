@@ -135,7 +135,7 @@ async function loadGames() {
 
 // Озвучка RuVoice на карточке игры: идёт сейчас (с прогрессом) или уже сделана/установлена
 const DUB_TASK = { prepare: "Подготовка", extract: "Извлечение реплик", transcribe: "Распознавание речи", translate: "Перевод",
-  speakers: "Кто говорит", samples: "Пробы голосов", generate: "Озвучка", judge: "Контролёр", install: "Установка в игру",
+  speakers: "Кто говорит", samples: "Пробы голосов", generate: "Озвучка", judge: "Контролёр", enginebench: "Стенд движков", install: "Установка в игру",
   uninstall: "Удаление озвучки", export: "Экспорт", import: "Импорт", train_tts: "Обучение голоса", train_voice: "Обучение голоса" };
 
 function dubLine(d) {

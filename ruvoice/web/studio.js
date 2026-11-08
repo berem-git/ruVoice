@@ -11,7 +11,7 @@ const LINE_STATUS = {
 };
 const STEP_NAMES = {
   extract: "Извлечение реплик", transcribe: "Распознавание речи", translate: "Перевод",
-  generate: "Озвучка", judge: "Контролёр качества", train_voice: "Обучение голоса", train_tts: "Дообучение голоса", bench: "Контрольная сцена", export: "Экспорт озвучки", import: "Импорт озвучки", speakers: "Кто говорит", redirect: "Переозвучка по указанию", direct: "Режиссёр", events_pass: "Смех и вздохи из оригинала", screen: "Отсев неречевых реплик",
+  generate: "Озвучка", judge: "Контролёр качества", train_voice: "Обучение тембра", enginebench: "Стенд движков", export: "Экспорт озвучки", import: "Импорт озвучки", speakers: "Кто говорит", redirect: "Переозвучка по указанию", direct: "Режиссёр", events_pass: "Смех и вздохи из оригинала", screen: "Отсев неречевых реплик",
   prepare: "Подготовка", samples: "Пробы голосов", install: "Установка в игру", uninstall: "Удаление озвучки",
 };
 const QUALITY = { fast: "Быстро — 1 вариант на реплику", normal: "Обычно — 2 варианта, контролёр выбирает лучший",
@@ -209,7 +209,7 @@ function renderFlow(body) {
     (generatedAll || stage === "generate" || stage === "judge") ? stepDub(info, s, n, generatedAll, busy, stage) : "",
     reviewPanel(info, busy),
     (n("approved") || info.installed) ? stepInstall(info, n("approved"), busy) : "",
-    benchPanel(info),
+    benchPanel(info, busy),
     settingsPanel(info));
 }
 
@@ -507,13 +507,33 @@ function modelsWarning() { return ""; }
 
 // ---------- настройки (свёрнуто) ----------
 
-function benchPanel(info) {
-  const b = info.bench || [];
-  if (!b.length) return "";
-  return h("details", { class: "panel" }, h("summary", {}, `Контрольная сцена — прогонов: ${b.length}`),
-    h("p", { class: "muted small" }, "Один и тот же набор реплик, озвученный разными способами/настройками. Файлы и страница для прослушивания — в папке проекта bench\\<метка>\\index.html."),
-    h("table", { class: "chars" }, h("thead", {}, h("tr", {}, h("th", {}, "Метка"), h("th", {}, "Способ"), h("th", { class: "num" }, "Ошибок текста"), h("th", { class: "num" }, "Длина"), h("th", { class: "num" }, "Похожесть"), h("th", {}, "Голоса"))),
-      h("tbody", {}, b.slice().reverse().map(r => h("tr", {}, h("td", {}, r.label), h("td", {}, r.engine), h("td", { class: "num" }, `${(r.cer * 100).toFixed(1)}%`), h("td", { class: "num" }, r.ratio), h("td", { class: "num" }, r.sim), h("td", {}, Object.entries(r.voices || {}).map(([c, v]) => `${c}: ${v}`).join(", ")))))));
+// Стенд движков: одни и те же реплики разными вариантами конвейера — цифры здесь, прослушивание на странице прогона
+const BENCH_METRICS = [["pron_cer", "акцент ↓"], ["whisper_cer", "ошибки текста ↓"], ["ecapa_sim", "похожесть ↑"], ["f0_range", "живость"], ["ratio", "длина"], ["seconds", "с/реплика"]];
+let benchVariants = null;
+function benchPanel(info, busy) {
+  const runs = (info.bench || []).filter(r => r.summary);
+  const box = h("details", { class: "panel" }, h("summary", {}, `Стенд движков${runs.length ? ` — прогонов: ${runs.length}` : ""}`),
+    h("p", { class: "muted small" }, "Закреплённый набор реплик (3 персонажа × 10) озвучивается выбранными вариантами: «ru» — донорский русский голос, «+rvc» — с обученным тембром персонажа, «@en» — клонирование с английской записи. Слушайте на странице прогона; цифры — подсказка, не приговор."),
+    h("div", { class: "bench-variants" }, h("span", { class: "muted small" }, "Загрузка вариантов…")));
+  const fill = variants => {
+    const cont = box.querySelector(".bench-variants");
+    if (!variants.length) { cont.replaceChildren(h("span", { class: "muted small" }, "Нет готовых движков речи.")); return; }
+    const checks = variants.map(v => h("label", { class: "radio inline" }, h("input", { type: "checkbox", value: v, checked: ["ru", "ru+rvc", "ru@en"].includes(v) }), h("span", {}, v)));
+    cont.replaceChildren(...checks, h("button", { class: "btn primary small", disabled: busy, onclick: async () => {
+      const chosen = checks.map(c => c.querySelector("input")).filter(i => i.checked).map(i => i.value);
+      if (!chosen.length) { alert("Выберите хотя бы один вариант"); return; }
+      await run("/enginebench", { variants: chosen });
+    } }, "▶ Сравнить движки"));
+  };
+  if (benchVariants) fill(benchVariants);
+  else api("GET", projUrl("/enginebench/variants")).then(d => { benchVariants = d.variants; fill(d.variants); }).catch(() => fill([]));
+  if (runs.length) box.append(h("div", {}, runs.slice().reverse().map(r => h("div", { class: "bench-run" },
+    h("div", { class: "row" }, h("b", {}, r.label), h("span", { class: "muted small" }, `${r.lines} реплик`),
+      h("a", { href: projUrl(`/bench?label=${encodeURIComponent(r.label)}`), target: "_blank", rel: "noopener" }, "Открыть и послушать")),
+    h("table", { class: "chars" }, h("thead", {}, h("tr", {}, h("th", {}, "Вариант"), BENCH_METRICS.map(([, l]) => h("th", { class: "num" }, l)), h("th", { class: "num" }, "ошибок"))),
+      h("tbody", {}, (r.variants || []).map(v => { const s = r.summary[v] || {}; return h("tr", {}, h("td", {}, v),
+        BENCH_METRICS.map(([k]) => h("td", { class: "num" }, s[k] == null ? "—" : s[k])), h("td", { class: "num" }, s.errors || 0)); })))))));
+  return box;
 }
 
 function settingsPanel(info) {
@@ -598,7 +618,6 @@ function settingsPanel(info) {
         h("button", { class: "btn small", title: "Сохранить готовую озвучку в файл .ruvoice — перенести на другой ПК или поделиться", onclick: () => runSteps(["export"]) }, "📦 Экспорт озвучки"),
         h("button", { class: "btn small", title: "Загрузить файл .ruvoice с готовой озвучкой этой игры", onclick: () => importPackage(studio.gid) }, "📥 Импорт озвучки"),
         info.last_export ? h("button", { class: "btn subtle small", onclick: () => api("POST", projUrl("/open-exports")) }, `Папка с пакетами (${info.last_export.mb} МБ)`) : "",
-        h("button", { class: "btn small", title: "Озвучить постоянный набор из ~30 реплик трёх персонажей текущим способом и оценить — чтобы сравнивать настройки и модели", onclick: () => run("/bench", {}) }, "🎯 Контрольная сцена"),
         h("button", { class: "btn danger small", title: "Вернуть игре оригинальный звук; проект, переводы и обученные голоса остаются", onclick: () => confirm("Удалить русскую озвучку из игры и вернуть оригинальный звук? Проект, переводы и обученные голоса останутся.") && runSteps(["uninstall"]) }, "🗑 Удалить русскую озвучку из игры"),
         h("button", { class: "btn subtle small", onclick: async () => {
           if (!confirm("Удалить проект озвучки (переводы, обученные голоса и сгенерированный звук)? Игра не затрагивается.")) return;

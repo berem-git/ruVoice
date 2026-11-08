@@ -2011,14 +2011,16 @@ class DubJobs:
                                   report=self._progress(gid), cancel=self.cancel_flag.is_set)
         self._finish(gid, f"Пробы закреплённого голоса готовы: {result['label']}")
 
-    def _do_bench(self, gid: str, label: str | None = None):
-        """Озвучить постоянный контрольный набор реплик текущим способом и оценить (bench.py)."""
-        from . import bench
+    def _do_enginebench(self, gid: str, variants: list[str], label: str | None = None):
+        """Стенд движков: закреплённый набор реплик разными вариантами конвейера (enginebench.py)."""
+        from . import asr, enginebench
         self._release_translator()
-        res = bench.run(self, gid, label)
-        if res:
-            self._finish(gid, f"Контрольная сцена готова: ошибок текста {res['cer']:.1%}, длина {res['ratio']}, "
-                              f"похожесть {res['sim']} — projects\\…\\bench\\{res['label']}\\index.html")
+        asr.unload()
+        res = enginebench.run(self, gid, variants, label)
+        best = min((v for v in res["summary"] if res["summary"][v].get("pron_cer") is not None),
+                   key=lambda v: res["summary"][v]["pron_cer"], default=None)
+        self._finish(gid, f"Стенд готов: {res['label']}, вариантов {len(variants)}"
+                          + (f", чище всех произношение у «{best}»" if best else ""))
 
     # --- установка ---
 
