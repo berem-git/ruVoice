@@ -184,7 +184,31 @@ class VoxCPMEngine:
         return np.asarray(wav, dtype=np.float32).reshape(-1), self.model.tts_model.sample_rate
 
 
-ENGINES = {"rvc": RVC, "voxcpm": VoxCPMEngine}
+class OmniVoiceEngine:
+    """OmniVoice (k2-fsa): клон голоса с русского донора (или с записи персонажа — быстрый путь) в своей среде
+    runtime\\engines\\omnivoice; понимает теги [laughter], [sigh] прямо в тексте. Образец всегда с расшифровкой."""
+    def load(self):
+        torch = _setup("omnivoice")
+        from omnivoice import OmniVoice
+        cuda = _device(torch) == "cuda"
+        self.model = OmniVoice.from_pretrained(str(MODELS / "OmniVoice"), device_map="cuda:0" if cuda else "cpu",
+                                               dtype=torch.float16 if cuda else torch.float32)
+
+    def generate(self, req):
+        import numpy as np
+        import torch
+        if not req.get("ref_text"):
+            raise ValueError("OmniVoice нужен текст образца голоса (расшифровка донора или профиля)")
+        if req.get("seed") is not None:
+            torch.manual_seed(int(req["seed"]))
+        p = req.get("params") or {}
+        out = self.model.generate(text=req["text"], ref_audio=req["ref_audio"], ref_text=req["ref_text"],
+                                  num_step=int(p.get("steps", 32)))
+        wav = out[0] if isinstance(out, (list, tuple)) else out
+        return np.asarray(wav, dtype=np.float32).reshape(-1), 24000
+
+
+ENGINES = {"rvc": RVC, "voxcpm": VoxCPMEngine, "omnivoice": OmniVoiceEngine}
 
 
 def main():

@@ -151,6 +151,20 @@ def synthesize(engine: str, texts: list[str], refs: list[dict], max_seconds: lis
                     "max_seconds": seconds, "seed": seed})
                 outputs.append(audio.read(dst))
         return outputs
+    if engine == "omnivoice":  # refs[i] = {"audio", "text"}: донор по-русски или профиль персонажа с английской расшифровкой
+        if _model is not None:
+            unload()
+        outputs = []
+        for text, ref, seconds in zip(texts, refs, max_seconds):
+            if not ref or not ref.get("audio") or not ref.get("text"):
+                raise ValueError("OmniVoice нужен образец голоса с расшифровкой")
+            with tempfile.TemporaryDirectory() as td:
+                dst = Path(td) / "generated.wav"
+                client.get("omnivoice").request({"op": "generate", "text": accent.mark(text, "custom"),
+                    "ref_audio": ref["audio"], "ref_text": ref["text"], "params": params, "max_seconds": seconds,
+                    "seed": seed, "out": str(dst)})
+                outputs.append(audio.read(dst))
+        return outputs
     if engine == "ru":  # refs[i] = {"audio": образец голоса, "text": его расшифровка, "language": "ru"|"en"}
         texts = [accent.mark(t, "acute") for t in texts]
         return _ru_generate(texts, refs, max_seconds, params)
