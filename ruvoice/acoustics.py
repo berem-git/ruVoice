@@ -6,8 +6,8 @@
 затухающий, слегка затемнённый шум — и русская речь смешивается с ним (доля «wet» растёт с
 длиной хвоста). Фон подкладывается под готовую реплику, чтобы паузы не звучали «мёртво».
 
-Режимы (настройка effects_mode): auto/unknown — по хвосту каждой реплики, порог спада 0,25 с;
-baked — то же с порогом 0,12 с; engine/dry — ничего не накладывать."""
+Режимы (настройка effects_mode): auto/unknown — по хвосту каждой реплики, порог спада 0,35 с;
+baked — то же с порогом 0,15 с; engine/dry — ничего не накладывать."""
 from __future__ import annotations
 
 import numpy as np
@@ -15,8 +15,11 @@ import numpy as np
 from . import audio
 
 VERSION = 1
-MIN_RT60 = {"auto": 0.25, "unknown": 0.25, "baked": 0.12}
-MAX_WET = 0.5
+MIN_RT60 = {"auto": 0.35, "unknown": 0.35, "baked": 0.15}   # короче — естественное затухание голоса, не помещение
+MAX_RT60 = 2.0
+MAX_WET = 0.4
+MIN_TAIL_FRAMES = 10   # хвост над шумом не короче 100 мс
+MIN_TAIL_RANGE = 15.0  # и спадает не меньше чем на столько дБ
 FRAME = 0.01          # кадр огибающей, с
 SPEECH_BAND_DB = 25   # речь — кадры громче пика минус столько
 
@@ -48,20 +51,22 @@ def analyse_room(orig: np.ndarray, sr: int, mode: str = "auto") -> dict | None:
     noise = float(np.percentile(db, 2))  # самые тихие кадры — шум комнаты или тишина
     if peak - noise < 20:  # нет динамики — ни речи, ни хвоста
         return None
+    if noise < -90:  # цифровая тишина: файл обрезан или сведён с затуханием — хвост не отличить от монтажа
+        return None
     speech = np.where(db > peak - SPEECH_BAND_DB)[0]
     end = int(speech[-1]) + 1
     tail = db[end:end + int(3.0 / FRAME)]
     if end + len(tail) >= len(db) - 1:
         tail = tail[:-2]  # последние кадры файла — обрезка или затухание, не хвост
     keep = np.where(tail > noise + 6)[0]
-    if keep.size < 5:
+    if keep.size < MIN_TAIL_FRAMES:
         return None
     k = int(keep[-1]) + 1  # хвост — пока он над шумом
     t = np.arange(k) * FRAME
     slope = float(np.polyfit(t, tail[:k], 1)[0])  # дБ/с
-    if slope >= -5 or (tail[0] - tail[k - 1]) < 10:
+    if slope >= -5 or (tail[0] - tail[k - 1]) < MIN_TAIL_RANGE:
         return None
-    rt60 = float(np.clip(-60.0 / slope, 0.1, 3.0))
+    rt60 = float(np.clip(-60.0 / slope, 0.1, MAX_RT60))
     if rt60 < MIN_RT60.get(mode or "auto", 0.25):
         return None
     wet = float(np.clip(0.12 + 0.25 * (rt60 - 0.2), 0.1, MAX_WET))
