@@ -74,6 +74,21 @@ def _write_instance(port: int, url: str):
         print(f"instance.json: {e}")
 
 
+def release_instance():
+    """Перед перезапуском из программы: отпустить мьютекс единственной копии и запись о порте,
+    чтобы новая копия не приняла старую, ещё закрывающуюся, за работающую."""
+    global _mutex
+    if _mutex:
+        try:
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.CloseHandle.argtypes = [ctypes.c_void_p]
+            k32.CloseHandle(_mutex)
+        except Exception as e:
+            print(f"мьютекс: {e}")
+        _mutex = None
+    _drop_instance()
+
+
 def _drop_instance():
     import json
     try:

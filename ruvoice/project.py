@@ -157,6 +157,8 @@ class Project:
     def characters(self) -> list[dict]:
         rows = self.db().execute(
             "SELECT c.*, COUNT(l.id) AS lines, SUM(l.duration) AS seconds, "
+            "SUM(CASE WHEN l.status!='skipped' THEN l.duration ELSE 0 END) AS speech_seconds, "  # без криков и стонов
+            "SUM(l.status!='skipped') AS speech_lines, "
             "SUM(l.status='approved') AS approved, SUM(l.status IN ('generated','approved','rejected')) AS generated "
             "FROM characters c LEFT JOIN lines l ON l.char=c.id GROUP BY c.id ORDER BY lines DESC").fetchall()
         return [dict(r) for r in rows]

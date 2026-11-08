@@ -5,9 +5,11 @@
 `import torch`. Поэтому одна и та же папка программы работает и на ПК с NVIDIA, и на ноутбуке с AMD.
 """
 import json
+import os
 import subprocess
 import sys
 import threading
+import time
 import urllib.request
 from pathlib import Path
 
@@ -237,12 +239,16 @@ def install_rocm(progress=lambda msg: None):
 
 
 def restart_app(delay: float = 0.7):
-    """Перезапустить программу (после смены ускорителя): новый процесс через RuVoice.exe, этот — закрыть."""
-    import os
-    import time
+    """Перезапустить программу (после смены ускорителя): новый процесс через RuVoice.exe, этот — закрыть.
+    Мьютекс единственной копии отпускается до запуска новой, иначе она видит «уже запущен» и выходит."""
 
     def go():
         time.sleep(delay)
+        try:
+            from . import main
+            main.release_instance()
+        except Exception as e:
+            print(f"перезапуск: {e}")
         exe = PROJECT_DIR / "RuVoice.exe"
         if exe.exists():
             subprocess.Popen([str(exe)], cwd=str(PROJECT_DIR), creationflags=subprocess.DETACHED_PROCESS)

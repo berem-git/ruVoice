@@ -53,12 +53,28 @@ class SettingsTests(ProjectCase):
         self.assertNotIn("ft_level", self.p.get("settings"))
 
 
+class SpeechSecondsTests(ProjectCase):
+    def test_characters_report_speech_seconds(self):
+        self.p.set_characters([{"id": "a", "name": "A"}])
+        self.p.add_lines([{"id": "x1", "char": "a", "orig": "orig/x1.wav", "duration": 10.0, "en": "Hi", "src": {}},
+                          {"id": "x2", "char": "a", "orig": "orig/x2.wav", "duration": 30.0, "en": "", "src": {}}])
+        self.p.update_line("x2", status="skipped")
+        c = self.p.characters()[0]
+        self.assertEqual((c["seconds"], c["lines"], c["speech_seconds"], c["speech_lines"]), (40.0, 2, 10.0, 1))
+
+
 class TierTests(unittest.TestCase):
     def test_main_needs_seconds_and_lines(self):
         s = {"timbre_level": "normal", "timbre_min_seconds": 120}
         self.assertEqual(timbre.tier({"seconds": 130, "lines": 12}, s, None), "main")
         self.assertEqual(timbre.tier({"seconds": 130, "lines": 11}, s, None), "episodic")
         self.assertEqual(timbre.tier({"seconds": 119, "lines": 50}, s, None), "episodic")
+
+    def test_tier_counts_speech_seconds_not_all_audio(self):
+        s = {"timbre_level": "normal", "timbre_min_seconds": 120}
+        # 8 минут звука, но речи с текстом 13 секунд (крики и стоны без субтитров) — не главный
+        self.assertEqual(timbre.tier({"seconds": 497, "lines": 40, "speech_seconds": 13, "speech_lines": 9}, s, None), "episodic")
+        self.assertEqual(timbre.tier({"seconds": 497, "lines": 40, "speech_seconds": 130, "speech_lines": 12}, s, None), "main")
 
     def test_override_and_off(self):
         s = {"timbre_level": "normal", "timbre_min_seconds": 120}

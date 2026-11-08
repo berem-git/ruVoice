@@ -39,8 +39,11 @@ def tier(char: dict, settings: dict, override: str | None) -> str:
         return "main"
     if override == "episodic":
         return "episodic"
-    enough = (char.get("seconds") or 0) >= float(settings.get("timbre_min_seconds", 120))
-    return "main" if enough and (char.get("lines") or 0) >= MIN_LINES else "episodic"
+    # считаются только речевые реплики (с текстом): крики и стоны без субтитров в обучение не идут
+    seconds = char.get("speech_seconds", char.get("seconds")) or 0
+    lines = char.get("speech_lines", char.get("lines")) or 0
+    enough = seconds >= float(settings.get("timbre_min_seconds", 120))
+    return "main" if enough and lines >= MIN_LINES else "episodic"
 
 
 def level(settings: dict) -> dict | None:
@@ -118,7 +121,7 @@ def plan(jobs, gid: str) -> dict:
     for c in mains(p, s):
         v = entry(p, c["id"])
         minutes_used = min((c["seconds"] or 0) / 60, lvl["minutes"])
-        planned.append({"id": c["id"], "name": c["name"], "minutes": round((c["seconds"] or 0) / 60, 1),
+        planned.append({"id": c["id"], "name": c["name"], "minutes": round((c.get("speech_seconds", c["seconds"]) or 0) / 60, 1),
                         "trained": voice(p, c["id"]) is not None, "weak": bool(v and v.get("weak")),
                         "retrain": needs_training(v, lvl),
                         "reason": (v or {}).get("reason"), "epochs": lvl["epochs"], "max_seconds": lvl["minutes"] * 60,
