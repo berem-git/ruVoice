@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import accel, adapters, engines, langmgr, models, timbre, tools
+from . import accel, adapters, cleanup, engines, langmgr, models, timbre, tools
 from .dub import DubJobs
 from .library import Library
 from .project import Project
@@ -634,6 +634,13 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
         dub.cancel(gid)
         return dub.status(gid)
 
+    @r.post("/projects/{gid:path}/restore-originals")
+    def restore_originals(gid: str):
+        """Вернуть оригиналы, удалённые уборкой после установки (извлечение из игры заново)."""
+        _project(gid)
+        dub.enqueue(gid, "restore_originals")
+        return dub.status(gid)
+
     @r.post("/projects/{gid:path}/pause")
     def pause(gid: str):
         dub.pause(gid)
@@ -807,6 +814,8 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
             info.update(settings=dub.settings(gid), stats=p.stats(), characters=p.characters(),
                         installed=bool(a and a.is_installed(p, game)) or bool(p.get("installed_at")),
                         installed_count=p.get("installed_count", 0),
+                        originals_purged=p.get("originals_purged"),
+                        purge_estimate_mb=round(cleanup.purge_size_cached(p.dir) / 2**20),
                         extracted=bool(p.get("extracted_at")), last_sample=p.get("last_sample", []),
                         engines=engines.describe(),
                         voices={k: {**v, "trained": timbre.voice(p, k) is not None} for k, v in (p.get("voices") or {}).items()},

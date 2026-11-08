@@ -46,6 +46,7 @@ DEFAULT_SETTINGS = {
     "autofix": True,             # после контролёра переозвучить проблемные реплики с большим числом вариантов
     "max_speedup": 1.1,          # русская фраза длиннее — ускоряем не более чем на 10 %, остальное остаётся длиннее
     "auto_install": False,       # после подготовки сразу озвучить всю игру и установить без прослушивания
+    "after_install": "minimum",  # после установки: minimum — удалить оригиналы, пробы и стенд (их можно вернуть); keep — оставить всё
     "event_gap": 0.3,            # пауза (с) из оригинала после смеха/вздоха перед русской речью
 }
 SETTINGS_VERSION = 3             # 3: конвейер v2 (донор + тембр), старые настройки дообучения убраны
@@ -1090,6 +1091,7 @@ class DubJobs:
         Подачу задаёт режиссёр (пунктуация + указание) по оригиналу."""
         from . import accel, asr, judge, pron, tts
         accel.require_gpu()
+        self._ensure_originals(gid)
         p, report, s = self.project(gid), self._progress(gid), self.settings(gid)
         if ids:
             lines = [l for l in p.lines(ids=ids) if l["ru"] and l["status"] != "skipped"]
@@ -1326,6 +1328,7 @@ class DubJobs:
         репликами, высоту), акцент, живость подачи, эмоцию и события оригинала. Каждая проблема получает код
         и конкретный план доработки (_fix_plan); проблемные реплики переозвучиваются по плану, до rounds раз.
         Для проблем подачи режиссёр (языковая модель) получает диагноз и пишет новое указание."""
+        self._ensure_originals(gid)
         from . import asr, director, judge, pron, tts
         p, report, s = self.project(gid), self._progress(gid), self.settings(gid)
         lines = [l for l in (p.lines(ids=ids) if ids else p.lines(status="generated,approved,rejected")) if l["gen"]]
@@ -1793,6 +1796,7 @@ class DubJobs:
     def _do_samples(self, gid: str, next_variant: bool = False, only_char: str | None = None):
         """Пробы: по 3 реплики главных персонажей по их планам голоса. next_variant — другой прогон (другие
         зёрна). only_char — обновить пробу одного персонажа (сразу после обучения тембра), остальные оставить."""
+        self._ensure_originals(gid)
         from . import asr
         p, report = self.project(gid), self._progress(gid)
         if next_variant:
@@ -1891,6 +1895,7 @@ class DubJobs:
 
     def _do_enginebench(self, gid: str, variants: list[str], label: str | None = None):
         """Стенд движков: закреплённый набор реплик разными вариантами конвейера (enginebench.py)."""
+        self._ensure_originals(gid)
         from . import asr, enginebench
         self._release_translator()
         asr.unload()
@@ -1911,7 +1916,51 @@ class DubJobs:
         p.set("installed_count", n)
         from . import cleanup
         cleanup.project_garbage(p.dir, dry=False)
-        self._finish(gid, f"Установлено реплик: {n}")
+        note = ""
+        if self.settings(gid).get("after_install", "minimum") == "minimum":
+            freed = cleanup.purge_originals(p.dir)
+            if freed:
+                p.set("originals_purged", {"at": time.time(), "bytes": freed})
+                note = f"; освобождено {freed / 2**30:.1f} ГБ (оригиналы, пробы и стенд — их можно вернуть)"
+        self._finish(gid, f"Установлено реплик: {n}{note}")
+
+    # --- оригиналы после уборки «минимум» ---
+
+    def _ensure_originals(self, gid: str):
+        """Задачам озвучки и контроля нужны оригиналы: если их удалила уборка после установки — вернуть."""
+        if self.project(gid).get("originals_purged"):
+            self._do_restore_originals(gid)
+
+    def _do_restore_originals(self, gid: str):
+        """Вернуть оригиналы, удалённые после установки: извлечь игру заново во временный проект и забрать
+        оттуда звук реплик этого проекта. Переводы, статусы и озвучка не трогаются."""
+        import shutil
+        p, report = self.project(gid), self._progress(gid)
+        tmp = Project(f"{gid}~restore")
+        try:
+            report("Возврат оригиналов: извлечение из игры…")
+            self._adapter(gid).extract(tmp, self._game(gid), report)
+            have = {l["id"]: l["orig"] for l in tmp.lines()}
+            lines = p.lines()
+            copied = 0
+            for i, l in enumerate(lines, 1):
+                src = have.get(l["id"])
+                if not src or not (tmp.dir / src).exists():
+                    continue
+                dst = p.dir / l["orig"]
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(tmp.dir / src, dst)
+                copied += 1
+                if i % 200 == 0:
+                    report(f"Возврат оригиналов: {i}/{len(lines)}", i, len(lines))
+            if not (p.dir / "orig_chunks").exists() and (tmp.dir / "orig_chunks").exists():
+                shutil.copytree(tmp.dir / "orig_chunks", p.dir / "orig_chunks")
+        finally:
+            tmp.close()
+            shutil.rmtree(tmp.dir, ignore_errors=True)
+        missing = sum(1 for l in p.lines() if not (p.dir / l["orig"]).exists())
+        p.set("originals_purged", None)
+        self._finish(gid, f"Оригиналы возвращены: {copied} реплик" + (f", не найдено {missing}" if missing else ""))
 
     # --- кто говорит ---
 

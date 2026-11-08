@@ -130,6 +130,42 @@ def project_garbage(pdir: Path, dry: bool = True) -> dict:
             "fixed_lines": fixed}
 
 
+# --- после установки в игру: «минимум» ---
+# Что можно удалить после установки и потом вернуть (извлечь из игры заново): оригиналы, пробы, стенд.
+# Остаются: project.db (переводы, оценки), gen/ (готовая озвучка — для переустановки и экспорта),
+# backup/ (для «Удалить озвучку»), voices/ (модели тембра), profiles/, orig_chunks/ (липсинк Source при установке).
+PURGE_DIRS = ("orig", "samples", "bench")
+
+
+def purge_size(pdir: Path) -> int:
+    """Сколько байт освободит purge_originals."""
+    return sum(_size(Path(pdir) / d) for d in PURGE_DIRS)
+
+
+_size_cache: dict[str, tuple[float, int]] = {}
+
+
+def purge_size_cached(pdir: Path, ttl: float = 60.0) -> int:
+    """То же с кэшем на ttl секунд: папка оригиналов большая, опрос студии частый."""
+    key = str(pdir)
+    now = time.time()
+    hit = _size_cache.get(key)
+    if hit and now - hit[0] < ttl:
+        return hit[1]
+    n = purge_size(pdir)
+    _size_cache[key] = (now, n)
+    return n
+
+
+def purge_originals(pdir: Path) -> int:
+    """Удалить оригиналы, пробы и стенд; вернуть освобождённые байты."""
+    freed = 0
+    for d in PURGE_DIRS:
+        freed += _remove(Path(pdir) / d, dry=False)
+    _size_cache.pop(str(pdir), None)
+    return freed
+
+
 CACHE_MIN_AGE = 24 * 3600  # свежее суток в кэше не трогаем: им может пользоваться идущая задача
 
 
