@@ -1,3 +1,5 @@
+<p align="center"><img src="ruvoice/web/icon.png" width="96" alt="RuVoice"></p>
+
 # RuVoice — русская озвучка для игр
 
 **Версия 1.1.2:** [скачать установщик для Windows x64](https://github.com/berem-git/ruVoice/releases/tag/v1.1.2).

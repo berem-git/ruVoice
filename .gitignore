@@ -14,3 +14,5 @@ __pycache__/
 *.wav
 *.tmp
 dist/
+
+.claude/
