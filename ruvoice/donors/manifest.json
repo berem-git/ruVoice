@@ -249,7 +249,7 @@
    "id": "f_mid_young",
    "gender": "female",
    "age": "young",
-   "f0": 402.5,
+   "f0": 201.3,
    "source": "Qwen3-TTS VoiceDesign по описанию",
    "license": "Apache-2.0",
    "clips": {
@@ -315,7 +315,7 @@
    "id": "f_high_young",
    "gender": "female",
    "age": "young",
-   "f0": 430.1,
+   "f0": 215.1,
    "source": "Qwen3-TTS VoiceDesign по описанию",
    "license": "Apache-2.0",
    "clips": {

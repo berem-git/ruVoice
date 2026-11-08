@@ -47,8 +47,22 @@ class PickTests(unittest.TestCase):
         # профиль 145 Гц: в ±4 пт только m150 (110 → 4,8 пт, 220 → 7,2 пт) — выбирается он, хотя вектор ближе к m110
         self.assertEqual(donors.pick(self.bank, 145.0, np.array([1.0, 0.0]), embed_by_name), "m150")
 
+    def test_pick_keeps_gender_of_the_voice(self):
+        # 175 Гц — женский голос: m150 (2,7 пт) ближе по высоте и по вектору, но донор должен быть женским
+        self.assertEqual(donors.pick(self.bank, 175.0, np.array([1.0, 0.0]), embed_by_name), "f220")
+        self.assertEqual(donors.pick(self.bank, 300.0, np.array([1.0, 0.0]), embed_by_name), "f220")  # детский → женские
+        self.assertIn(donors.pick(self.bank, 120.0, np.array([0.0, 1.0]), embed_by_name), ("m110", "m150"))  # мужской → мужские
+        self.assertEqual(donors.gender_for(229.0), "female")
+        self.assertEqual(donors.gender_for(140.0), "male")
+        self.assertIsNone(donors.gender_for(0.0))
+
+    def test_bank_pitches_are_plausible(self):
+        for d in donors.load():
+            self.assertLess(d["f0"], 330, f"{d['id']}: высота {d['f0']} Гц — ошибка на октаву")
+            self.assertGreater(d["f0"], 70, d["id"])
+
     def test_pick_falls_back_to_three_closest_when_no_band(self):
-        self.assertEqual(donors.pick(self.bank, 400.0, np.array([1.0, 0.0]), embed_by_name), "m110")
+        self.assertEqual(donors.pick(self.bank, 400.0, np.array([1.0, 0.0]), embed_by_name), "f220")  # женский пул
 
     def test_pick_without_f0_uses_similarity_only(self):
         self.assertEqual(donors.pick(self.bank, 0.0, np.array([0.0, 1.0]), embed_by_name), "m150")

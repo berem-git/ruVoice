@@ -76,11 +76,20 @@ def _unit(v) -> np.ndarray:
     return v / (np.linalg.norm(v) + 1e-9)
 
 
+def gender_for(f0: float | None) -> str | None:
+    """Пол донора по высоте голоса персонажа: от 165 Гц — женские доноры (детские голоса тоже), ниже — мужские."""
+    if not f0:
+        return None
+    return "female" if f0 >= 165 else "male"
+
+
 def pick(bank: list[dict], f0: float, emb: np.ndarray | None, embed_fn) -> str | None:
-    """Донор для голоса: сначала высота (±4 полутона, иначе три ближайших), среди них — похожесть ECAPA.
-    Без отпечатка — ближайший по высоте; без высоты и отпечатка — первый мужской."""
+    """Донор для голоса: сначала пол (по высоте), потом высота (±4 полутона, иначе три ближайших),
+    среди них — похожесть ECAPA. Без отпечатка — ближайший по высоте; без высоты и отпечатка — первый мужской."""
     if not bank:
         return None
+    g = gender_for(f0)
+    bank = [d for d in bank if d.get("gender") == g] or bank
     with_f0 = [d for d in bank if d.get("f0")]
     cands = bank
     if f0 and with_f0:
