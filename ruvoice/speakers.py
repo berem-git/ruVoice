@@ -111,6 +111,8 @@ NAME_MIN = 10       # безымянные голоса меньше этого 
 
 def _speech(l: dict) -> bool:
     """В реплике есть слова (а не «...», «(Спит)», «(Стонет)», пустые субтитры)."""
+    if l.get("status") == "skipped" or (l.get("info") or {}).get("speaker_manual"):
+        return False
     t = " ".join(x for x in (l.get("en"), l.get("ru"), l.get("ru_official")) if x)
     t = re.sub(r"\([^)]*\)|\[[^\]]*\]|\*[^*]*\*", " ", t)
     return bool(re.search(r"[A-Za-zА-Яа-яЁё]{2,}", t))
@@ -382,6 +384,71 @@ def attach_rest(p, have: dict) -> int:
         with p.db() as c:
             c.executemany("UPDATE lines SET char=? WHERE id=?", moves)
     return len(moves)
+
+
+def align_reengine(p) -> tuple[int, int]:
+    """Подсказки RE Engine из имён совпавших субтитров и отсев длинных сцен перед обучением."""
+    lines = [l for l in p.lines() if l["ru"] and l["status"] != "skipped" and _speech(l)]
+    tagged, scenes = [], []
+    by_char: dict[str, Counter] = {}
+    by_tag: dict[str, Counter] = {}
+    for line in lines:
+        sub = (line["info"] or {}).get("sub") or {}
+        key = sub.get("key", "")
+        duration = line["duration"] or 0
+        if duration >= 12 and re.fullmatch(r"(?:EV|CF)\d+_9\d{3}", key, re.I):
+            scenes.append(line)
+            continue
+        match = re.fullmatch(r"(?:EV|CF)\d+_\d+_((?:pl|em|vo)\d{4})", key, re.I)
+        if not match or duration > 12 or (sub.get("score") or 0) < 0.78:
+            continue
+        tag = match[1].lower()
+        char = line["char"]
+        tagged.append((line, tag))
+        by_char.setdefault(char, Counter())[tag] += 1
+        by_tag.setdefault(tag, Counter())[char] += 1
+    targets = {}
+    for tag, counts in by_tag.items():
+        if counts.total() < 4:
+            continue
+        char = next((c for c, n in counts.most_common()
+                     if c and n >= 4 and n / by_char[c].total() >= 0.8), None)
+        targets[tag] = char or f"re_speaker_{tag}"
+    changes = [(l, targets[tag]) for l, tag in tagged if tag in targets and l["char"] != targets[tag]]
+    if not changes and not scenes:
+        return 0, 0
+    affected = {c for l, target in changes for c in (l["char"], target)} | {l["char"] for l in scenes}
+    profiles = {k: v for k, v in (p.get("profiles") or {}).items() if not any(k.startswith(f"{c}_") for c in affected)}
+    maps = {key: {c: v for c, v in (p.get(key) or {}).items() if c not in affected}
+            for key in ("voice_f0", "ru_voice", "review")}
+    voices = p.get("voices") or {}
+    for char in affected & voices.keys():
+        voices[char] = {**voices[char], "val": None, "reason": "изменился состав реплик"}
+    with p.db() as db:
+        for tag, char in targets.items():
+            if char == f"re_speaker_{tag}":
+                db.execute("INSERT OR IGNORE INTO characters (id, name, include) VALUES (?, ?, 1)", (char, f"Голос {tag}"))
+        db.executemany("UPDATE lines SET char=? WHERE id=?", [(c, l["id"]) for l, c in changes])
+        db.executemany("UPDATE lines SET status='skipped', error=? WHERE id=?",
+                       [("Длинная игровая сцена без отдельных говорящих", l["id"]) for l in scenes])
+        meta = {**maps, "profiles": profiles, "voices": voices, "samples": None}
+        db.executemany("INSERT OR REPLACE INTO meta VALUES (?, ?)",
+                       [(k, json.dumps(v, ensure_ascii=False)) for k, v in meta.items()])
+    return len(changes), len(scenes)
+
+
+def coherent_training_lines(p, lines: list[dict]) -> list[dict]:
+    """Исключить из набора обучения записи, заметно далёкие от большинства исходных голосов."""
+    path = p.dir / "speakers.npz"
+    if not path.is_file():
+        return lines
+    with np.load(path, allow_pickle=False) as cached:
+        vectors = dict(zip(cached["ids"].tolist(), cached["E"]))
+    measured = [l for l in lines if l["id"] in vectors]
+    if len(measured) < 6:
+        return lines
+    centre = _robust(np.stack([vectors[l["id"]] for l in measured]))
+    return [l for l in measured if float(vectors[l["id"]] @ centre) >= 0.50]
 
 
 def apply(p, proposal: dict, names: dict | None = None, skip: set | None = None) -> int:

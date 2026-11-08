@@ -104,7 +104,7 @@ def mains(p, settings: dict) -> list[dict]:
     """Главные персонажи (с учётом ручных переопределений), по убыванию числа реплик."""
     over = p.get("timbre_override") or {}
     chars = [c for c in p.characters() if tier(c, settings, over.get(c["id"])) == "main"]
-    chars.sort(key=lambda c: -(c["lines"] or 0))
+    chars.sort(key=lambda c: -(c.get("speech_seconds") or 0))
     return chars
 
 
@@ -120,7 +120,7 @@ def plan(jobs, gid: str) -> dict:
     planned = []
     for c in mains(p, s):
         v = entry(p, c["id"])
-        minutes_used = min((c["seconds"] or 0) / 60, lvl["minutes"])
+        minutes_used = min((c.get("speech_seconds") or 0) / 60, lvl["minutes"])
         planned.append({"id": c["id"], "name": c["name"], "minutes": round((c.get("speech_seconds", c["seconds"]) or 0) / 60, 1),
                         "trained": voice(p, c["id"]) is not None, "weak": bool(v and v.get("weak")),
                         "retrain": needs_training(v, lvl),
@@ -144,7 +144,7 @@ def estimate(jobs, gid: str) -> dict:
             continue
         chars = mains(p, {**s, "timbre_level": key})
         todo = [c for c in chars if needs_training(entry(p, c["id"]), lvl)]
-        minutes = sum(min((c["seconds"] or 0) / 60, lvl["minutes"]) * lvl["epochs"] * rate / 60 for c in todo)
+        minutes = sum(min((c.get("speech_seconds") or 0) / 60, lvl["minutes"]) * lvl["epochs"] * rate / 60 for c in todo)
         out[key] = {"name": lvl["name"], "chars": len(chars), "todo": len(todo), "minutes": round(minutes),
                     "disk_gb": round(DISK_GB_PER_VOICE * len(chars), 2), "names": [c["name"] for c in chars][:6]}
     return {"levels": out, "current": s.get("timbre_level", "normal"), "ready": engines.rvc_available()}
@@ -156,12 +156,12 @@ def dataset(jobs, p, char: str, max_seconds: float) -> tuple[list[Path], list[di
     """Записи персонажа для обучения (WAV 40 кГц в voices/<char>/rvc/dataset) и контрольные реплики вне обучения.
     Берутся реплики от 1 с после обрезки тишины, не пропущенные, где по звуку речь (speech ≥ 0.5), ближе к центру
     голоса (jobs._most_typical); контроль — 6 реплик с русским текстом длиной 2–7 с после первых восьми."""
-    from . import audio
+    from . import audio, speakers
     from .dub import _safe
     cands = [l for l in p.lines(char=char)
-             if l["status"] != "skipped" and l["orig"] and (l["duration"] or 0) >= 1.0
+             if l["status"] != "skipped" and l["orig"] and 1.0 <= (l["duration"] or 0) <= 12.0
              and ((l["info"] or {}).get("speech") is None or (l["info"] or {}).get("speech") >= 0.5)]
-    cands = jobs._most_typical(p, cands[:400])
+    cands = jobs._most_typical(p, speakers.coherent_training_lines(p, cands)[:400])
     holdout = [l for l in cands[8:] if l["ru"] and 2.0 <= (l["duration"] or 0) <= 7.0][:HOLDOUT]
     hold_ids = {l["id"] for l in holdout}
     ddir = p.dir / "voices" / _safe(char) / "rvc" / "dataset"

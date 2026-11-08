@@ -112,7 +112,7 @@ def _ru_generate(texts, refs, max_seconds, params) -> list[tuple[np.ndarray, int
         limit = int(max(max_seconds) * TOKENS_PER_SEC) + 24
         # подвыборка кодов тембра (sub-talker) по умолчанию 0.9 — главный источник «плавающего» голоса между
         # репликами; интонацию задаёт основной поток, поэтому тембр можно держать строже
-        extra = {k: params[k] for k in ("subtalker_temperature", "top_k", "top_p", "subtalker_top_k") if k in params}
+        extra = {k: params[k] for k in ("subtalker_dosample", "subtalker_temperature", "top_k", "top_p", "subtalker_top_k") if k in params}
         wavs, sr = _model.generate_voice_clone(text=texts, language=["Russian"] * len(texts), voice_clone_prompt=prompts,
                                                max_new_tokens=limit, temperature=float(params.get("temperature", 0.8)),
                                                repetition_penalty=1.05, **extra)

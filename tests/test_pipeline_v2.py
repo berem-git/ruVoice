@@ -197,8 +197,8 @@ class VoicePlanTests(PlanCase):
         self.assertEqual((plan["source"], plan["timbre"], plan["donor"]["id"], plan["reason"]), ("ru", False, "m110", "эпизодический персонаж"))
         ref = self.jobs.line_ref(self.p, self.p.line("n00"), plan)
         self.assertEqual((ref["language"], ref["donor"], ref["style"]), ("ru", "m110", "calm"))
-        self.jobs._emotions_for_char = lambda p, char: {"n00": ("angry", 0.9)}
-        self.assertEqual(self.jobs.line_ref(self.p, self.p.line("n00"), plan)["style"], "angry")
+        with patch.object(self.jobs, "_emotions_for_char", side_effect=AssertionError("emotion must not switch the reference")):
+            self.assertEqual(self.jobs.line_ref(self.p, self.p.line("n00"), plan), ref)
 
 
 class GenerateTests(PlanCase):

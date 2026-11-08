@@ -143,7 +143,7 @@ tr.ru td { background: #4f8cff12; }
 .no { color: var(--gray); }
 .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
 
-.modal { position: fixed; inset: 0; z-index: 60; background: #000a; display: flex; align-items: center; justify-content: center; }
+.modal { position: fixed; inset: 0; z-index: 90; background: #000a; display: flex; align-items: center; justify-content: center; }
 .modal-box { width: min(560px, 94vw); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 22px 20px; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; }
 .modal-head h3 { margin: 0; }

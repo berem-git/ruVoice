@@ -108,6 +108,34 @@ class Project:
         row = self.db().execute("SELECT * FROM lines WHERE id=?", (line_id,)).fetchone()
         return _line(row) if row else None
 
+    def assign_speaker(self, line_id: str, char: str):
+        """Перенести реплику к существующему голосу и снять одобрение старой записи."""
+        with self.lock:
+            line = self.line(line_id)
+            if line is None:
+                raise ValueError("Реплика не найдена")
+            if not self.db().execute("SELECT 1 FROM characters WHERE id=?", (char,)).fetchone():
+                raise ValueError("Персонаж не найден")
+            if line["char"] == char:
+                return
+            affected = {line["char"], char}
+            info = dict(line["info"] or {})
+            for key in ("plan", "judge", "fix", "fix_history", "fit", "flag", "style", "trained", "engine"):
+                info.pop(key, None)
+            info["speaker_manual"] = True
+            status = "skipped" if line["status"] == "skipped" else "translated" if line["ru"] else "new"
+            samples = self.get("samples")
+            review = self.get("review") or {}
+            if samples:
+                samples = {**samples, "chars": [c for c in samples.get("chars", []) if c["id"] not in affected],
+                           "at": time.time()}
+            with self.db() as c:
+                c.execute("UPDATE lines SET char=?, status=?, gen=NULL, gen_duration=NULL, error=NULL, info=?, updated=? WHERE id=?",
+                          (char, status, json.dumps(info, ensure_ascii=False), time.time(), line_id))
+                c.executemany("INSERT OR REPLACE INTO meta VALUES (?, ?)",
+                              [("samples", json.dumps(samples, ensure_ascii=False)),
+                               ("review", json.dumps({k: v for k, v in review.items() if k not in affected}, ensure_ascii=False))])
+
     def lines(self, status: str | None = None, char: str | None = None, query: str | None = None,
               limit: int | None = None, offset: int = 0, ids: list[str] | None = None,
               rework: bool = False) -> list[dict]:

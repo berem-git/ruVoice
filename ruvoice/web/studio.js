@@ -11,13 +11,12 @@ const LINE_STATUS = {
 };
 const STEP_NAMES = {
   extract: "Извлечение реплик", transcribe: "Распознавание речи", translate: "Перевод",
-  generate: "Озвучка", judge: "Контролёр качества", train_voice: "Обучение тембра", enginebench: "Стенд движков", export: "Экспорт озвучки", import: "Импорт озвучки", speakers: "Кто говорит", redirect: "Переозвучка по указанию", direct: "Режиссёр", events_pass: "Смех и вздохи из оригинала", screen: "Отсев неречевых реплик",
+  generate: "Озвучка", judge: "Контролёр качества", train_voice: "Обучение тембра", engineexport: "Экспорт озвучки", import: "Импорт озвучки", speakers: "Кто говорит", redirect: "Переозвучка по указанию", direct: "Режиссёр", events_pass: "Смех и вздохи из оригинала", screen: "Отсев неречевых реплик",
   prepare: "Подготовка", samples: "Пробы голосов", install: "Установка в игру", uninstall: "Удаление озвучки",
   restore_originals: "Возврат оригиналов",
 };
 const QUALITY = { fast: "Быстро — 1 вариант на реплику", normal: "Обычно — 2 варианта, контролёр выбирает лучший",
   thorough: "Тщательно — 4 варианта (в 3–4 раза дольше)" };
-const ENGINE_NAMES = { voxcpm: "VoxCPM2 (клон с записи)", ru: "Qwen-RU (русский донор)", custom: "CustomVoice", silero: "Silero", omnivoice: "OmniVoice" };
 
 const studio = { gid: null, info: null, view: "flow", timer: null, filters: { status: "", char: "", q: "", offset: 0 } };
 const PAGE = 50;
@@ -83,7 +82,7 @@ async function pollStudio() {
       || JSON.stringify(info.review) !== JSON.stringify(studio.info.review)
       || JSON.stringify(info.previews) !== JSON.stringify(studio.info.previews);
   studio.info = info;
-  if (finished) { voicesCache.rows = null; benchVariants = null; studio.step = null; }  // задача закончилась — раскрыть актуальный шаг
+  if (finished) { voicesCache.rows = null; studio.step = null; }  // задача закончилась — раскрыть актуальный шаг
   renderJobBar();
   // Не перерисовываем, только пока пользователь печатает в текстовом поле (галочки и списки не в счёт)
   const typing = document.activeElement?.matches("textarea, input[type=text], input[type=search], input:not([type])");
@@ -91,17 +90,15 @@ async function pollStudio() {
 }
 
 // Раскрытые панели и прокрутка переживают перерисовку
-const openPanels = new Set();
 function renderStudioBodyPreserving(render, body) {
-  for (const d of body.querySelectorAll("details")) {
-    const key = d.querySelector("summary")?.textContent || "";
-    if (d.open) openPanels.add(key); else openPanels.delete(key);
-  }
+  const panelKey = d => d.dataset.panel || d.querySelector("summary")?.textContent;
+  const panels = new Map(Array.from(body.querySelectorAll("details"), d => [panelKey(d), d.open]));
   const y = body.scrollTop;
   const result = render(body);
   const restore = () => {
     for (const d of body.querySelectorAll("details")) {
-      if (openPanels.has(d.querySelector("summary")?.textContent || "")) d.open = true;
+      const key = panelKey(d);
+      if (panels.has(key)) d.open = panels.get(key);
     }
     body.scrollTop = y;
   };
@@ -195,7 +192,7 @@ const runSteps = (steps, ids) => run("/run", { steps, ids });
 
 // ---------- поток: пять шагов, раскрыт один ----------
 
-const TOOLS = { voices: "Голоса", bench: "Стенд движков", settings: "Настройки" };
+const TOOLS = { voices: "Голоса", settings: "Настройки" };
 const PREP_STAGES = ["prepare", "extract", "transcribe", "translate", "speakers", "train_voice", "samples", "restore_originals"];
 
 // Состояние пяти шагов по сводке проекта: done / active / running / pending и строка-итог
@@ -247,17 +244,25 @@ function renderStepper(model) {
   const open = studio.step || model.current.n;
   nav.replaceChildren(
     ...model.steps.map(st => h("button", { class: `stepbtn ${st.state} ${open === st.n ? "open" : ""}`, title: st.summary,
-        onclick: () => { studio.step = st.n; studio.view = "flow"; renderStudio(); } },
+        onclick: () => selectStep(st.n) },
       h("span", { class: "num" }, st.state === "done" ? "✓" : st.state === "running" ? h("span", { class: "spinner tiny" }) : st.n),
       h("span", { class: "t" }, st.title))),
     h("div", { class: "tools" },
       ...Object.entries(TOOLS).map(([k, name]) => h("button", { class: `btn small ${studio.tool === k ? "on" : ""}`,
         onclick: () => { studio.tool = studio.tool === k ? null : k; renderStudioBody(); } }, name)),
-      h("button", { class: "btn small", onclick: openSystem }, "Система")));
+      h("button", { class: "btn small", onclick: openSystem }, "Система"),
+      studio.info.installed && uninstallButton(model.busy)));
 }
 
-function stepRow(st, model) {
-  return h("div", { class: `steprow ${st.state}`, onclick: () => { studio.step = st.n; renderStudioBody(); } },
+function selectStep(number) {
+  studio.step = number;
+  studio.tool = null;
+  studio.view = "flow";
+  renderStudioBody();
+}
+
+function stepRow(st) {
+  return h("button", { type: "button", class: `steprow ${st.state}`, onclick: () => selectStep(st.n) },
     h("div", { class: "num" }, st.state === "done" ? "✓" : st.n),
     h("b", {}, st.title),
     h("span", { class: "sum muted" }, st.summary),
@@ -296,13 +301,16 @@ function renderFlow(body) {
     review: () => stepReview(info, s, n, generatedAll, busy),
     install: () => stepInstall(info, n("approved"), busy),
   };
-  const tool = studio.tool ? { voices: () => voicesPanel(info, busy), bench: () => benchPanel(info, busy), settings: () => settingsPanel(info) }[studio.tool]() : "";
-  if (tool && tool.tagName === "DETAILS") tool.open = true;
+  const tool = studio.tool ? { voices: () => voicesPanel(info, busy), settings: () => settingsPanel(info) }[studio.tool]() : "";
+  if (tool && tool.tagName === "DETAILS") {
+    tool.dataset.panel = studio.tool;
+    tool.open = true;
+  }
   body.replaceChildren(
     hardwareCard(info),
     adapterNotes(info.adapter),
     tool ? h("div", { class: "tool-drawer" }, tool) : "",
-    ...model.steps.map(st => st.n === open ? cards[st.key]() : stepRow(st, model)));
+    ...model.steps.map(st => st.n === open ? cards[st.key]() : stepRow(st)));
 }
 
 function card(num, title, text, actions, state) {
@@ -395,7 +403,8 @@ function stepSamples(info, generatedAll, busy, preparing) {
       c.error && h("span", { class: "error" }, c.error)),
     (c.items || []).map(it => h("div", { class: "sample-row" },
       h("div", { class: "sample-text" }, h("div", {}, it.ru), h("div", { class: "muted small" }, it.en)),
-      playBtn("orig", it.id, "Оригинал"), fileBtn(it.file, "Русский")))));
+      playBtn("orig", it.id, "Оригинал"), fileBtn(it.file, "Русский"), speakerPicker(it.id, c.id, busy))),
+    h("button", { class: "btn small", disabled: busy, onclick: () => run("/samples", { char: c.id }) }, "Обновить пробы этого голоса")));
   return card(2, "Послушайте персонажей", h("div", {},
     note,
     h("p", { class: "muted" }, "Слева оригинал, справа русский. Нравится — озвучим всю игру. Нет — переделайте пробы (другой прогон) или смените донора во вкладке «Голоса»."),
@@ -459,7 +468,7 @@ function stepDub(info, s, n, generatedAll, busy, stage) {
   const text = `Озвучено ${generatedAll} из ${s.total - n("skipped")} реплик.` + (left ? ` Ещё не озвучено: ${left}.` : "");
   return card(3, "Озвучка всей игры", text, [
     left ? h("button", { class: "btn primary", disabled: busy, onclick: () => runSteps(["generate"]) }, `Озвучить оставшиеся (${left})`) : "",
-    h("button", { class: "btn subtle small", disabled: busy, onclick: () => { studio.step = 4; renderStudioBody(); } }, "К проверке →"),
+    h("button", { class: "btn subtle small", disabled: busy, onclick: () => selectStep(4) }, "К проверке →"),
   ], left ? "active" : "done");
 }
 
@@ -490,6 +499,11 @@ async function regenRework() {
   pollStudio();
 }
 
+function uninstallButton(busy) {
+  return h("button", { class: "btn danger small", disabled: busy,
+    onclick: () => confirm("Удалить русскую озвучку из игры и вернуть оригинал?") && runSteps(["uninstall"]) }, "Удалить озвучку");
+}
+
 function stepInstall(info, approved, busy) {
   const a = info.adapter || {};
   const method = a.adapter === "source"
@@ -505,13 +519,14 @@ function stepInstall(info, approved, busy) {
   const purgeNote = info.settings?.after_install !== "keep" && mb > 0
     ? ` После установки освободится ~${mb >= 1024 ? (mb / 1024).toFixed(1) + " ГБ" : mb + " МБ"}: удалятся оригиналы, пробы и стенд (их можно вернуть); переводы, голоса, готовая озвучка и резервная копия остаются.` : "";
   const purged = info.originals_purged;
-  return card(4, info.installed ? "Озвучка установлена" : "Установка в игру",
+  return card(5, info.installed ? "Озвучка установлена" : "Установка в игру",
     h("div", {}, h("p", { class: "muted" }, `${method} Установятся только одобренные реплики (${approved}).` + (info.installed ? ` Сейчас установлено: ${info.installed_count}.` : "") + purgeNote),
+      !info.installed && h("p", { class: "muted small" }, "Озвучка RuVoice в игру не установлена."),
       purged ? h("p", { class: "muted small" }, `Оригиналы удалены после установки (освобождено ${(purged.bytes / 2 ** 30).toFixed(1)} ГБ). Для прослушивания оригиналов и переозвучки программа вернёт их сама; можно вернуть сейчас. `,
         h("button", { class: "btn small", disabled: busy, onclick: () => run("/restore-originals", {}) }, "Вернуть оригиналы")) : ""),
     [h("button", { class: "btn primary big", disabled: busy || !approved, onclick: () => confirm(`Установить ${approved} реплик в игру?`) && runSteps(["install"]) },
        info.installed ? "Обновить установку" : "Установить в игру"),
-     h("button", { class: "btn danger", disabled: busy, onclick: () => confirm("Удалить русскую озвучку из игры и вернуть оригинал?") && runSteps(["uninstall"]) }, "🗑 Удалить озвучку")],
+     uninstallButton(busy || !info.installed)],
     info.installed ? "done" : "active");
 }
 
@@ -618,35 +633,6 @@ function modelsWarning() { return ""; }
 // ---------- настройки (свёрнуто) ----------
 
 // Стенд движков: одни и те же реплики разными вариантами конвейера — цифры здесь, прослушивание на странице прогона
-const BENCH_METRICS = [["pron_cer", "акцент ↓"], ["whisper_cer", "ошибки текста ↓"], ["ecapa_sim", "похожесть ↑"], ["f0_range", "живость"], ["ratio", "длина"], ["seconds", "с/реплика"]];
-let benchVariants = null;
-function benchPanel(info, busy) {
-  const runs = (info.bench || []).filter(r => r.summary);
-  const box = h("details", { class: "panel" }, h("summary", {}, `Стенд движков${runs.length ? ` — прогонов: ${runs.length}` : ""}`),
-    h("p", { class: "muted small" }, "Закреплённый набор реплик (3 персонажа × 10) озвучивается выбранными вариантами: «ru» — донорский русский голос, «+rvc» — с обученным тембром персонажа, «@en» — клонирование с английской записи. Слушайте на странице прогона; цифры — подсказка, не приговор."),
-    h("div", { class: "bench-variants" }, h("span", { class: "muted small" }, "Загрузка вариантов…")));
-  const fill = variants => {
-    const cont = box.querySelector(".bench-variants");
-    if (!info.prepared) { cont.replaceChildren(h("span", { class: "muted small" }, "Стенд доступен после подготовки: ему нужны реплики с русским текстом.")); return; }
-    if (!variants.length) { cont.replaceChildren(h("span", { class: "muted small" }, "Нет готовых движков речи.")); return; }
-    const checks = variants.map(v => h("label", { class: "radio inline" }, h("input", { type: "checkbox", value: v, checked: ["ru", "ru+rvc", "ru@en"].includes(v) }), h("span", {}, v)));
-    cont.replaceChildren(...checks, h("button", { class: "btn primary small", disabled: busy, onclick: async () => {
-      const chosen = checks.map(c => c.querySelector("input")).filter(i => i.checked).map(i => i.value);
-      if (!chosen.length) { alert("Выберите хотя бы один вариант"); return; }
-      await run("/enginebench", { variants: chosen });
-    } }, "▶ Сравнить движки"));
-  };
-  if (benchVariants) fill(benchVariants);
-  else api("GET", projUrl("/enginebench/variants")).then(d => { benchVariants = d.variants; fill(d.variants); }).catch(() => fill([]));
-  if (runs.length) box.append(h("div", {}, runs.slice().reverse().map(r => h("div", { class: "bench-run" },
-    h("div", { class: "row" }, h("b", {}, r.label), h("span", { class: "muted small" }, `${r.lines} реплик`),
-      h("a", { href: projUrl(`/bench?label=${encodeURIComponent(r.label)}`), target: "_blank", rel: "noopener" }, "Открыть и послушать")),
-    h("table", { class: "chars" }, h("thead", {}, h("tr", {}, h("th", {}, "Вариант"), BENCH_METRICS.map(([, l]) => h("th", { class: "num" }, l)), h("th", { class: "num" }, "ошибок"))),
-      h("tbody", {}, (r.variants || []).map(v => { const s = r.summary[v] || {}; return h("tr", {}, h("td", {}, v),
-        BENCH_METRICS.map(([k]) => h("td", { class: "num" }, s[k] == null ? "—" : s[k])), h("td", { class: "num" }, s.errors || 0)); })))))));
-  return box;
-}
-
 function settingsPanel(info) {
   if (!info.exists) return "";
   const s = info.settings || {};
@@ -670,32 +656,14 @@ function settingsPanel(info) {
     h("summary", {}, "⚙ Настройки"),
     h("div", { class: "settings" },
       h("h3", {}, "Голос и исходное исполнение"),
-      h("p", { class: "muted small" }, "Произношение рождается от русского донора, тембр персонажа переносит обученная модель; кто какой голос получает — на панели «Голоса». Какой движок звучит лучше — покажет стенд движков."),
-      field("Источник русской речи", sel("speech_source", [["auto", "Автоматически"], ["ru", "Qwen-RU — русский донор по образцу"],
-          ["custom", "CustomVoice — готовый диктор с инструкцией"], ["silero", "Silero — русские дикторы (некоммерческая лицензия)"],
-          ["omnivoice", "OmniVoice — донор, теги смеха и вздохов"]]), "главные персонажи и донорский путь"),
-      field("Эпизодические персонажи", sel("episodic_mode", [["clone", "Клонировать с записи — ближе тембр, возможен акцент"],
-          ["donor", "Донорский русский голос — без акцента, тембр чужой"]])),
-      field("Движок клонирования", sel("clone_engine", [["auto", "Автоматически"], ["ru", "Qwen-RU — клон с английской записи"],
-          ["voxcpm", "VoxCPM2 — клон с английской записи"], ["omnivoice", "OmniVoice — клон с английской записи"]]), "быстрый путь эпизодических"),
+      h("p", { class: "muted small" }, "Произношение рождается от русского донора, тембр персонажа переносит обученная модель; кто какой голос получает — на панели «Голоса». Сначала послушайте пробы, затем одобрите результат или укажите, что поправить."),
       field("После установки в игру", sel("after_install", [["minimum", "Оставить минимум — удалить оригиналы, пробы и стенд (их можно вернуть)"],
           ["keep", "Оставить всё"]]), "переводы, голоса, готовая озвучка и резервная копия остаются всегда"),
-      field("Главный персонаж от", sel("timbre_min_seconds", [[60, "60 секунд речи"], [90, "90 секунд"], [120, "2 минут"], [180, "3 минут"], [300, "5 минут"]], Number),
-          "и от 12 реплик; уровень обучения тембра — в шаге «Подготовка»"),
-      h("div", { class: "row" },
-        h("button", { class: "btn primary", onclick: () => run("/preview", { count: 2 }) }, "Создать две пробы без установки"),
-        (info.previews || []).slice(-3).reverse().map(p => h("a", { class: "btn small",
-          href: `/api/projects/${encodeURIComponent(studio.gid)}/preview?label=${encodeURIComponent(p.label)}`,
-          target: "_blank", rel: "noopener" }, `Послушать ${p.count} пробы · ${p.engine} · ${p.label}`))),
       h("h3", {}, "Акустика оригинала"),
       field("Эхо и окружение", sel("effects_mode", [["auto", "Автоматически — эхо и фон по хвосту каждой реплики"], ["engine", "Добавляет игра — озвучка чистая"],
           ["dry", "Записи чистые, без эффектов"], ["baked", "Записаны в файле — переносить даже короткое эхо"]]),
           "где в оригинале слышен хвост эха, русская реплика получает такой же"),
       check("preserve_performance", "Сохранять из оригинала изолированные вздохи, смех и кашель между словами", true),
-      h("div", { class: "row" }, h("button", { class: "btn small", onclick: async () => {
-        const report = await api("GET", `/api/games/${encodeURIComponent(studio.gid)}/resources`);
-        alert(`Проверено файлов: ${report.scanned}\nРесурсы: ${JSON.stringify(report.counts)}\nАдаптер: ${report.adapter || "нужен новый читатель формата"}\n${report.note}`);
-      } }, "Найти ресурсы игры")),
       h("h3", {}, "Словарь имён и терминов"),
       h("p", { class: "muted small" }, "По одному на строку: «Английское = Русское». Переводчик будет использовать именно эти варианты."),
       glossary,
@@ -705,21 +673,12 @@ function settingsPanel(info) {
       radio("text_source", "official", "Официальные русские субтитры (лучшее качество)"),
       radio("text_source", "llm", "Перевести всё нейросетью (долго: сначала распознаётся вся речь)"),
       check("translate_missing", "Реплики без русских субтитров переводить нейросетью (иначе они остаются с оригинальным голосом)"),
-      h("details", { class: "advanced" }, h("summary", {}, "Расширенные (обычно трогать не нужно)"),
-        check("judge", "Контролёр качества (текст, похожесть, эмоция, смех/кашель)", true),
-        check("director", "Режиссёр: нейросеть слушает оригинал и готовит подачу каждой реплики (пунктуация, как играть)", true),
-        check("autofix", "Переозвучивать реплики, которые контролёр забраковал (больше вариантов)", true),
-        check("auto_install", "После подготовки сразу озвучить всю игру и установить без прослушивания"),
-        field("Переводчик", sel("translator", [["auto", "Авто — по видеопамяти"], ["qwen3-14b", "Qwen3 14B"], ["qwen3-8b", "Qwen3 8B"], ["qwen3-4b", "Qwen3 4B"]])),
-        field("Пауза после смеха и вздоха", sel("event_gap", [[0.15, "0,15 с"], [0.3, "0,3 с"], [0.5, "0,5 с"]], Number), "перед русской речью"),
-        h("label", { class: "field" }, h("span", {}, `Максимальное ускорение русской речи: ×${s.max_speedup}`),
-          h("input", { type: "range", min: 1, max: 1.5, step: 0.05, value: s.max_speedup, onchange: e => save({ max_speedup: parseFloat(e.target.value) }) }))),
       h("div", { class: "row" },
         h("button", { class: "btn small", onclick: openSystem }, "Система и нейросети…"),
         h("button", { class: "btn small", title: "Сохранить готовую озвучку в файл .ruvoice — перенести на другой ПК или поделиться", onclick: () => runSteps(["export"]) }, "📦 Экспорт озвучки"),
         h("button", { class: "btn small", title: "Загрузить файл .ruvoice с готовой озвучкой этой игры", onclick: () => importPackage(studio.gid) }, "📥 Импорт озвучки"),
         info.last_export ? h("button", { class: "btn subtle small", onclick: () => api("POST", projUrl("/open-exports")) }, `Папка с пакетами (${info.last_export.mb} МБ)`) : "",
-        h("button", { class: "btn danger small", title: "Вернуть игре оригинальный звук; проект, переводы и обученные голоса остаются", onclick: () => confirm("Удалить русскую озвучку из игры и вернуть оригинальный звук? Проект, переводы и обученные голоса останутся.") && runSteps(["uninstall"]) }, "🗑 Удалить русскую озвучку из игры"),
+        info.installed && uninstallButton(busy),
         h("button", { class: "btn subtle small", onclick: async () => {
           if (!confirm("Удалить проект озвучки (переводы, обученные голоса и сгенерированный звук)? Игра не затрагивается.")) return;
           try { await api("DELETE", projUrl("/project")); closeStudio(); } catch (e) { alert(e.message); }
@@ -734,7 +693,8 @@ const TIMBRE_STATE = { trained: ["ok", "тембр обучен"], weak: ["warn"
 function voicesPanel(info, busy) {
   if (!(info.characters || []).length) return "";
   const box = h("details", { class: "panel" }, h("summary", {}, `Голоса — персонажей: ${info.characters.length}`),
-    h("p", { class: "muted small" }, "Главные персонажи получают обученный тембр поверх донорского русского голоса (без акцента), эпизодические — быстрый путь. Донора и уровень можно поменять; изменения действуют на следующую озвучку."),
+    h("p", { class: "muted small" }, "Главные персонажи получают проверенный тембр поверх постоянного русского образца. Если реплика попала в чужую группу, укажите нужного персонажа в пробах или в списке реплик."),
+    h("button", { class: "btn small", onclick: () => { studio.view = "lines"; studio.filters = { status: "", char: "", q: "", offset: 0 }; renderStudio(); } }, "Открыть все реплики"),
     h("div", { class: "voices-list" }, h("span", { class: "muted small" }, "Загрузка…")));
   const reload = async () => { voicesCache.rows = null; await refreshStudio(); };
   const fill = (rows, donors) => {
@@ -776,6 +736,22 @@ function voicesPanel(info, busy) {
 
 // ---------- прослушивание ----------
 
+function speakerPicker(id, char, busy) {
+  if (busy || studio.info.characters.length < 2) return "";
+  return h("details", { class: "speaker-picker", "data-panel": `speaker-${id}` },
+    h("summary", {}, "Сменить персонажа"),
+    h("select", { "aria-label": "Персонаж", onchange: async e => {
+      const target = e.target.value;
+      if (target === char) return;
+      e.target.disabled = true;
+      try {
+        await api("POST", projUrl("/line/speaker"), { id, char: target });
+        voicesCache.rows = null;
+        await refreshStudio();
+      } catch (error) { alert(error.message); e.target.disabled = false; e.target.value = char; }
+    } }, studio.info.characters.map(c => h("option", { value: c.id, selected: c.id === char }, c.name))));
+}
+
 function lineCard(l) {
   const ch = studio.info.characters.find(c => c.id === l.char);
   const flag = l.info?.flag === "long" ? "Русская фраза заметно длиннее оригинала — лучше сократить текст"
@@ -794,6 +770,7 @@ function lineCard(l) {
     h("div", { class: "line-head" },
       h("span", { class: "dot", style: `background:${ch?.color || "#555"}` }),
       h("b", {}, ch?.name || l.char),
+      speakerPicker(l.id, l.char, studio.info.status.running || studio.info.status.queued.length),
       h("span", { class: "muted small" }, l.id),
       h("span", { class: `lstatus st-${l.status}` }, LINE_STATUS[l.status] || l.status),
       l.ru_source === "official" && h("span", { class: "tag" }, "официальный текст"),
@@ -821,7 +798,7 @@ function lineCard(l) {
     l.info?.fix?.plan ? h("div", { class: "muted small" }, "🔧 ", l.info.fix.plan) : "",
     noteInput(l),
     judgeDetails(l.info?.judge),
-    l.error && l.status === "error" && h("div", { class: "flag" }, "⚠ ", l.error));
+    l.error && ["error", "skipped"].includes(l.status) && h("div", { class: "flag" }, "⚠ ", l.error));
   return card;
 }
 

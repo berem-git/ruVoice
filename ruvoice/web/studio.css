@@ -200,7 +200,7 @@ label.radio.inline { display: inline-flex; margin: 0; }
 .stepper .tools { margin-left: auto; display: flex; gap: 4px; flex: none; }
 .tools .btn.on { background: var(--panel-2); border-color: var(--accent); color: var(--text); }
 .spinner.tiny { width: 12px; height: 12px; border-width: 2px; }
-.steprow { display: flex; align-items: center; gap: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 18px; margin-bottom: 8px; cursor: pointer; color: var(--muted); }
+.steprow { display: flex; width: 100%; align-items: center; gap: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 18px; margin-bottom: 8px; cursor: pointer; color: var(--muted); }
 .steprow:hover { border-color: #4f8cff66; }
 .steprow.pending { opacity: .6; }
 .steprow .num { flex: none; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--panel-2); border: 1px solid var(--line); font-weight: 700; font-size: 13px; }

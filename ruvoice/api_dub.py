@@ -521,17 +521,23 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
         return notes
 
     @r.post("/projects/{gid:path}/prepare")
-    def prepare(gid: str):
+    def prepare(gid: str, body: dict | None = None):
         """Всё автоматически: реплики → русский текст → обучение голосов главных персонажей → пробы."""
         _project(gid)
-        dub.enqueue(gid, "prepare")
+        body = body or {}
+        dub.enqueue(gid, "prepare", generate_after=body.get("generate_after") is True,
+                    retrain=body.get("retrain") is True)
         return dub.status(gid)
 
     @r.post("/projects/{gid:path}/samples")
     def samples(gid: str, body: dict | None = None):
         """Пробы голосов главных персонажей; next=true — следующий вариант звучания."""
-        _project(gid)
-        dub.enqueue(gid, "samples", next_variant=bool((body or {}).get("next")))
+        p = _project(gid)
+        char = (body or {}).get("char")
+        if char is not None and not any(c["id"] == char for c in p.characters()):
+            raise HTTPException(404, "Персонаж не найден")
+        kw = {"only_char": char} if char is not None else {}
+        dub.enqueue(gid, "samples", next_variant=bool((body or {}).get("next")), **kw)
         return dub.status(gid)
 
     @r.post("/projects/{gid:path}/restart")
@@ -581,6 +587,18 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
         if fields:
             p.update_line(id, **fields)
         return p.line(id)
+
+    @r.post("/projects/{gid:path}/line/speaker")
+    def assign_line_speaker(gid: str, body: dict):
+        p = _project(gid)
+        status = dub.status(gid)
+        if status["running"] or status["queued"]:
+            raise HTTPException(409, "Дождитесь завершения задачи, чтобы сменить голос реплики")
+        try:
+            p.assign_speaker(str(body.get("id") or ""), str(body.get("char") or ""))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return p.line(body["id"])
 
     @r.post("/projects/{gid:path}/mark")
     def mark(gid: str, body: Mark):

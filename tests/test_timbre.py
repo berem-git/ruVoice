@@ -281,7 +281,7 @@ class PlanTests(TimbreCase):
             est = timbre.estimate(self.jobs, self.gid)
         normal = est["levels"]["normal"]
         self.assertEqual((normal["chars"], normal["todo"]), (1, 1))
-        hero_seconds = next(c["seconds"] for c in self.p.characters() if c["id"] == "hero")
+        hero_seconds = next(c["speech_seconds"] for c in self.p.characters() if c["id"] == "hero")
         self.assertGreaterEqual(hero_seconds, 120)
         self.assertEqual(normal["minutes"], round(min(hero_seconds / 60, 15) * 300 * 5.0 / 60))
         self.assertEqual(normal["disk_gb"], 0.06)
@@ -289,13 +289,13 @@ class PlanTests(TimbreCase):
         self.assertTrue(est["ready"])
         self.assertEqual(est["levels"]["off"]["chars"], 0)
 
-    def test_plan_orders_mains_by_lines(self):
+    def test_plan_orders_mains_by_speech_duration(self):
         self.p.set_characters([{"id": "boss", "name": "Босс"}])
         self.p.add_lines([{"id": f"b{i:02d}", "char": "boss", "orig": "orig/h00.wav", "duration": 9.0, "en": "x", "src": {}} for i in range(15)])
         self.p.set("timbre_override", {"npc": "train"})
         with patch("ruvoice.engines.rvc_available", return_value=False):
             plan = timbre.plan(self.jobs, self.gid)
-        self.assertEqual([c["id"] for c in plan["planned"]], ["hero", "boss", "npc"])
+        self.assertEqual([c["id"] for c in plan["planned"]], ["boss", "hero", "npc"])
         self.assertFalse(plan["ready"])
         self.assertEqual(plan["level"], "normal")
         self.assertTrue(all(c["epochs"] == 300 and c["max_seconds"] == 900 and "est_minutes" in c and not c["trained"]
