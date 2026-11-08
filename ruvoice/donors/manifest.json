@@ -1,0 +1,359 @@
+{
+ "version": 1,
+ "created_at": 1794152489.7840407,
+ "sample_rate": 24000,
+ "donors": [
+  {
+   "id": "m_low_adult",
+   "gender": "male",
+   "age": "adult",
+   "f0": 79.6,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "m_low_adult_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "m_low_adult_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "m_low_adult_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  },
+  {
+   "id": "m_low_old",
+   "gender": "male",
+   "age": "old",
+   "f0": 81.5,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "m_low_old_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "m_low_old_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "m_low_old_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  },
+  {
+   "id": "m_low_young",
+   "gender": "male",
+   "age": "young",
+   "f0": 103.3,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "m_low_young_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "m_low_young_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "m_low_young_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  },
+  {
+   "id": "m_mid_young",
+   "gender": "male",
+   "age": "young",
+   "f0": 169.7,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "m_mid_young_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "m_mid_young_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "m_mid_young_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  },
+  {
+   "id": "m_mid_adult",
+   "gender": "male",
+   "age": "adult",
+   "f0": 164.9,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "m_mid_adult_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "m_mid_adult_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "m_mid_adult_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  },
+  {
+   "id": "m_mid_old",
+   "gender": "male",
+   "age": "old",
+   "f0": 108.5,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "m_mid_old_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "m_mid_old_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "m_mid_old_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  },
+  {
+   "id": "m_high_young",
+   "gender": "male",
+   "age": "young",
+   "f0": 153.8,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "m_high_young_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "m_high_young_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "m_high_young_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  },
+  {
+   "id": "m_high_adult",
+   "gender": "male",
+   "age": "adult",
+   "f0": 163.9,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "m_high_adult_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "m_high_adult_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "m_high_adult_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  },
+  {
+   "id": "f_low_adult",
+   "gender": "female",
+   "age": "adult",
+   "f0": 198.3,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "f_low_adult_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "f_low_adult_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "f_low_adult_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  },
+  {
+   "id": "f_low_old",
+   "gender": "female",
+   "age": "old",
+   "f0": 216.3,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "f_low_old_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "f_low_old_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "f_low_old_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  },
+  {
+   "id": "f_low_young",
+   "gender": "female",
+   "age": "young",
+   "f0": 222.6,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "f_low_young_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "f_low_young_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "f_low_young_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  },
+  {
+   "id": "f_mid_young",
+   "gender": "female",
+   "age": "young",
+   "f0": 402.5,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "f_mid_young_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "f_mid_young_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "f_mid_young_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  },
+  {
+   "id": "f_mid_adult",
+   "gender": "female",
+   "age": "adult",
+   "f0": 238.6,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "f_mid_adult_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "f_mid_adult_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "f_mid_adult_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  },
+  {
+   "id": "f_mid_old",
+   "gender": "female",
+   "age": "old",
+   "f0": 186.1,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "f_mid_old_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "f_mid_old_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "f_mid_old_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  },
+  {
+   "id": "f_high_young",
+   "gender": "female",
+   "age": "young",
+   "f0": 430.1,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "f_high_young_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "f_high_young_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "f_high_young_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  },
+  {
+   "id": "f_high_adult",
+   "gender": "female",
+   "age": "adult",
+   "f0": 299.8,
+   "source": "Qwen3-TTS VoiceDesign по описанию",
+   "license": "Apache-2.0",
+   "clips": {
+    "calm": {
+     "file": "f_high_adult_calm.flac",
+     "text": "Мы вышли на дорогу ранним утром, когда над рекой ещё держался туман. Впереди было несколько часов пути, и никто не торопился."
+    },
+    "angry": {
+     "file": "f_high_adult_angry.flac",
+     "text": "Хватит! Убирайся отсюда немедленно, пока не стало хуже!"
+    },
+    "sad": {
+     "file": "f_high_adult_sad.flac",
+     "text": "Всё кончено… Я не знаю, как теперь жить дальше, правда не знаю…"
+    }
+   }
+  }
+ ]
+}
