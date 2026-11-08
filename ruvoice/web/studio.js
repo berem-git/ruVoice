@@ -45,6 +45,7 @@ const fileBtn = (file, label) =>
 // ---------- открытие / обновление ----------
 
 async function openStudio(gid) {
+  if (studio.gid !== gid) { studio.step = null; studio.tool = null; }
   studio.gid = gid;
   studio.view = "flow";
   studio.filters = { status: "", char: "", q: "", offset: 0 };
@@ -82,7 +83,7 @@ async function pollStudio() {
       || JSON.stringify(info.review) !== JSON.stringify(studio.info.review)
       || JSON.stringify(info.previews) !== JSON.stringify(studio.info.previews);
   studio.info = info;
-  if (finished) { voicesCache.rows = null; benchVariants = null; }
+  if (finished) { voicesCache.rows = null; benchVariants = null; studio.step = null; }  // задача закончилась — раскрыть актуальный шаг
   renderJobBar();
   // Не перерисовываем, только пока пользователь печатает в текстовом поле (галочки и списки не в счёт)
   const typing = document.activeElement?.matches("textarea, input[type=text], input[type=search], input:not([type])");
@@ -121,6 +122,7 @@ function renderStudio() {
         h("div", { class: "muted small" }, studio.info.adapter ? `Способ: ${studio.info.adapter.name}` : "Для этой игры пока нет способа")),
       powerControl(),
       h("div", { id: "jobbar", class: "jobbar" })),
+    h("nav", { id: "stepper", class: "stepper" }),
     h("div", { id: "studio-body", class: "studio-body" }));
   renderJobBar();
   renderStudioBody();
@@ -191,11 +193,83 @@ const runSteps = (steps, ids) => run("/run", { steps, ids });
 
 // ---------- поток ----------
 
+// ---------- поток: пять шагов, раскрыт один ----------
+
+const TOOLS = { voices: "Голоса", bench: "Стенд движков", settings: "Настройки" };
+const PREP_STAGES = ["prepare", "extract", "transcribe", "translate", "speakers", "train_voice", "samples", "restore_originals"];
+
+// Состояние пяти шагов по сводке проекта: done / active / running / pending и строка-итог
+function stepsModel(info) {
+  const s = info.stats || { total: 0, by_status: {}, rework: 0, seconds: 0, with_official: 0 }, by = s.by_status || {};
+  const n = k => by[k] || 0;
+  const generatedAll = n("generated") + n("approved") + n("rejected");
+  const busy = Boolean(info.status.running || info.status.queued.length);
+  const stage = busy ? info.status.task : null;
+  const left = n("translated");
+  const reviewReady = Object.values(info.review || {}).filter(st => st.state === "ready").length;
+  const plan = info.train_plan || { planned: [] };
+  const trained = (plan.planned || []).filter(c => c.trained).length;
+  const prepare = {
+    n: 1, key: "prepare", title: "Подготовка",
+    state: PREP_STAGES.includes(stage) ? "running" : info.prepared ? "done" : "active",
+    summary: info.prepared ? `${s.total} реплик · ${(info.characters || []).length} персонажей · тембр у ${trained} из ${(plan.planned || []).length}`
+      : info.extracted ? `Реплики извлечены (${s.total}), текст и пробы ещё не готовы` : "Реплики, текст, голоса и пробы",
+  };
+  const samples = {
+    n: 2, key: "samples", title: "Пробы",
+    state: !info.samples ? "pending" : generatedAll > 0 ? "done" : "active",
+    summary: !info.samples ? "Появятся после подготовки" : generatedAll > 0 ? "Голоса одобрены — игра озвучивается этим способом" : `Готовы пробы ${(info.samples.chars || []).length} персонажей — послушайте`,
+  };
+  const dub = {
+    n: 3, key: "dub", title: "Озвучка",
+    state: stage === "generate" || stage === "judge" || stage === "redirect" ? "running"
+      : generatedAll > 0 && !left ? "done" : generatedAll > 0 ? "active" : "pending",
+    summary: generatedAll ? `Озвучено ${generatedAll} из ${s.total - n("skipped")}` + (left ? `, осталось ${left}` : "") : "Вся игра одним нажатием после проб",
+  };
+  const review = {
+    n: 4, key: "review", title: "Проверка",
+    state: (n("generated") || reviewReady) ? "active" : n("approved") && !n("generated") ? "done" : "pending",
+    summary: generatedAll ? `Одобрено ${n("approved")} · на прослушивании ${n("generated")}` + (s.rework ? ` · слабых ${s.rework}` : "") : "Послушать и одобрить персонажей",
+  };
+  const install = {
+    n: 5, key: "install", title: "Установка",
+    state: stage === "install" || stage === "uninstall" ? "running" : info.installed ? "done" : n("approved") ? "active" : "pending",
+    summary: info.installed ? `Установлено ${info.installed_count} реплик` : n("approved") ? `Готово к установке: ${n("approved")} одобренных` : "Нужны одобренные реплики",
+  };
+  const steps = [prepare, samples, dub, review, install];
+  const current = steps.find(x => x.state === "running") || steps.find(x => x.state === "active") || steps[steps.length - 1];
+  return { steps, current, busy, stage, s, n, generatedAll, left };
+}
+
+function renderStepper(model) {
+  const nav = document.getElementById("stepper");
+  if (!nav) return;
+  const open = studio.step || model.current.n;
+  nav.replaceChildren(
+    ...model.steps.map(st => h("button", { class: `stepbtn ${st.state} ${open === st.n ? "open" : ""}`, title: st.summary,
+        onclick: () => { studio.step = st.n; studio.view = "flow"; renderStudio(); } },
+      h("span", { class: "num" }, st.state === "done" ? "✓" : st.state === "running" ? h("span", { class: "spinner tiny" }) : st.n),
+      h("span", { class: "t" }, st.title))),
+    h("div", { class: "tools" },
+      ...Object.entries(TOOLS).map(([k, name]) => h("button", { class: `btn small ${studio.tool === k ? "on" : ""}`,
+        onclick: () => { studio.tool = studio.tool === k ? null : k; renderStudioBody(); } }, name)),
+      h("button", { class: "btn small", onclick: openSystem }, "Система")));
+}
+
+function stepRow(st, model) {
+  return h("div", { class: `steprow ${st.state}`, onclick: () => { studio.step = st.n; renderStudioBody(); } },
+    h("div", { class: "num" }, st.state === "done" ? "✓" : st.n),
+    h("b", {}, st.title),
+    h("span", { class: "sum muted" }, st.summary),
+    h("span", { class: "muted small" }, "развернуть"));
+}
+
 function renderFlow(body) {
   const info = studio.info;
   if (!info.adapter) {
     const g = games.find(x => x.id === studio.gid) || {};
     const what = [g.engine, ...(g.middleware || [])].filter(Boolean).join(", ");
+    document.getElementById("stepper")?.replaceChildren();
     if (g.status === "ru_audio" || g.status === "ru_audio_store") {
       body.replaceChildren(h("div", { class: "callout good" },
         h("p", {}, h("b", {}, "В этой игре уже есть официальная русская озвучка."),
@@ -210,23 +284,25 @@ function renderFlow(body) {
       h("p", { class: "muted" }, "Доступны адаптеры Wwise и FMOD, отдельных звуковых файлов, обычных ZIP/PK3/PK4/IWD/LÖVE, открытых Godot PCK v1/v2 и Ren’Py RPA v2/v3, а также Unreal, RE Engine, Source и FromSoftware. Поддержка зависит от содержимого и версии конкретных архивов; определение движка само по себе не гарантирует извлечение и установку.")));
     return;
   }
-  const s = info.stats || { total: 0, by_status: {}, rework: 0 }, by = s.by_status || {};
-  const n = k => by[k] || 0;
-  const generatedAll = n("generated") + n("approved") + n("rejected");
-  const busy = Boolean(info.status.running || info.status.queued.length);
-  const stage = busy ? info.status.task : null;
-
+  const model = stepsModel(info);
+  const { s, n, generatedAll, busy, stage } = model;
+  renderStepper(model);
+  const open = studio.step || model.current.n;
+  const cards = {
+    prepare: () => stepPrepare(info, s, busy, stage),
+    samples: () => info.samples ? stepSamples(info, generatedAll, busy, PREP_STAGES.includes(stage))
+      : card(2, "Пробы", "Пробы голосов появятся после подготовки: по три реплики на персонажа, оригинал и русский вариант рядом.", null, "pending"),
+    dub: () => stepDub(info, s, n, generatedAll, busy, stage),
+    review: () => stepReview(info, s, n, generatedAll, busy),
+    install: () => stepInstall(info, n("approved"), busy),
+  };
+  const tool = studio.tool ? { voices: () => voicesPanel(info, busy), bench: () => benchPanel(info, busy), settings: () => settingsPanel(info) }[studio.tool]() : "";
+  if (tool && tool.tagName === "DETAILS") tool.open = true;
   body.replaceChildren(
     hardwareCard(info),
     adapterNotes(info.adapter),
-    stepPrepare(info, s, busy, stage),
-    voicesPanel(info, busy),
-    info.samples ? stepSamples(info, generatedAll, busy, stage === "prepare") : "",
-    (generatedAll || stage === "generate" || stage === "judge") ? stepDub(info, s, n, generatedAll, busy, stage) : "",
-    reviewPanel(info, busy),
-    (n("approved") || info.installed) ? stepInstall(info, n("approved"), busy) : "",
-    benchPanel(info, busy),
-    settingsPanel(info));
+    tool ? h("div", { class: "tool-drawer" }, tool) : "",
+    ...model.steps.map(st => st.n === open ? cards[st.key]() : stepRow(st, model)));
 }
 
 function card(num, title, text, actions, state) {
@@ -245,17 +321,17 @@ function stepPrepare(info, s, busy, stage) {
     return card(1, "Подготовка идёт", h("div", {},
       h("p", {}, st.message || "Работаем…"),
       pct != null ? h("div", { class: "progress wide" }, h("div", { style: `width:${pct}%` })) : "",
-      h("p", { class: "muted small" }, "Программа достаёт реплики, готовит русский текст, раскладывает реплики по голосам, обучает тембр главных персонажей и делает пробы. ",
-        "Это долго (десятки минут, для больших игр — часы). Можно свернуть программу; нагрузку на компьютер регулирует переключатель сверху.",
-        info.settings?.auto_install ? " Включён режим «без прослушивания»: после подготовки программа сама озвучит всю игру и установит её." : ""),
+      h("p", { class: "muted small" }, "Реплики → русский текст → кто говорит → тембр главных → пробы. Это долго; программу можно свернуть.",
+        info.settings?.auto_install ? " Режим «без прослушивания»: после подготовки игра озвучится и установится сама." : ""),
       timbreLevelPicker(info, true)),
       jobButtons(info.status), "active");
   }
   if (!info.prepared) {
     const text = info.extracted
       ? `Реплики уже извлечены (${s.total}). Осталось подготовить текст, обучить тембр главных персонажей и сделать пробы.`
-      : "Программа сама достанет реплики из игры, подготовит русский текст, разберётся, кто где говорит, обучит тембр главных персонажей и покажет пробы. Озвучивается всё, у чего есть русские субтитры. В файлы игры ничего не записывается до вашего одобрения.";
-    return card(1, "Подготовка", h("div", {}, h("p", { class: "muted" }, text), timbreLevelPicker(info, busy), autoInstallCheck(info)),
+      : "Программа достанет реплики из игры, подготовит русский текст, разберётся, кто говорит, обучит тембр главных персонажей и покажет пробы. В игру ничего не записывается до вашего одобрения.";
+    return card(1, "Подготовка", h("div", {}, h("p", { class: "muted" }, text),
+      h("details", { class: "more" }, h("summary", {}, "Тембр главных персонажей и режим без прослушивания"), timbreLevelPicker(info, busy), autoInstallCheck(info))),
       [h("button", { class: "btn primary big", disabled: busy || modelsMissing(), title: modelsMissing() ? "Сначала скачайте набор нейросетей (шаг 0)" : "", onclick: () => run("/prepare") }, info.extracted ? "Продолжить подготовку" : "Начать"),
        modelsMissing() && h("span", { class: "muted small" }, "Сначала скачайте нейросети в шаге 0")], "active");
   }
@@ -320,8 +396,7 @@ function stepSamples(info, generatedAll, busy, preparing) {
       playBtn("orig", it.id, "Оригинал"), fileBtn(it.file, "Русский")))));
   return card(2, "Послушайте персонажей", h("div", {},
     note,
-    h("p", { class: "muted" },
-      "Слева оригинал, справа русский вариант: у главных персонажей — донорский русский голос с обученным тембром, у эпизодических — клон с записи. Если нравится — озвучим всю игру. Если нет — переделайте пробы (другой прогон), смените донора на панели «Голоса» или начните заново."),
+    h("p", { class: "muted" }, "Слева оригинал, справа русский. Нравится — озвучим всю игру. Нет — переделайте пробы (другой прогон) или смените донора во вкладке «Голоса»."),
     h("div", { class: "samples" }, blocks)),
     preparing || (info.settings?.auto_install && (info.status.running || info.status.queued.length)) ? []
       : decided ? [h("span", { class: "muted small" }, "Игра уже озвучена этим способом.")]
@@ -337,10 +412,10 @@ function reviewPanel(info, busy) {
   const ready = Object.entries(info.review || {}).filter(([, st]) => st.state === "ready");
   if (!ready.length) return "";
   const key = ready.map(([c, st]) => c + st.at).join("|");
-  const box = h("div", { class: "step active review" }, h("div", { class: "num" }, "👂"),
-    h("div", { class: "step-main" }, h("h3", {}, `Послушайте и одобрите: готовы ${ready.length} ${ready.length === 1 ? "персонаж" : "персонажа"}`),
-      h("p", { class: "muted small" }, "Персонаж озвучен целиком. Если нравится — одобрить (пойдёт в установку). Если нет — напишите, что поправить, и переозвучьте: комментарий станет указанием для нейросети (темп, высота, манера)."),
-      h("div", { class: "review-list" }, h("span", { class: "muted small" }, "Загрузка…"))));
+  const box = h("div", { class: "review" },
+    h("h4", {}, `Готовы целиком: ${ready.length} ${ready.length === 1 ? "персонаж" : "персонажа"} — послушайте и одобрите`),
+    h("p", { class: "muted small" }, "Нравится — одобрить (пойдёт в установку). Нет — напишите, что поправить, и переозвучьте: комментарий станет указанием для нейросети."),
+    h("div", { class: "review-list" }, h("span", { class: "muted small" }, "Загрузка…")));
   const fill = data => {
     const list = box.querySelector(".review-list");
     list.replaceChildren(...(data.ready || []).map(r => {
@@ -364,24 +439,39 @@ function reviewPanel(info, busy) {
 }
 
 function stepDub(info, s, n, generatedAll, busy, stage) {
-  if (stage === "generate" || stage === "judge") {
+  if (stage === "generate" || stage === "judge" || stage === "redirect") {
     const st = info.status, pct = st.total ? Math.round(st.done / st.total * 100) : null;
-    return card(3, stage === "generate" ? "Озвучка всей игры" : "Контролёр проверяет озвучку", h("div", {},
+    return card(3, stage === "generate" ? "Озвучка идёт" : stage === "judge" ? "Контролёр проверяет озвучку" : "Переозвучка по указанию", h("div", {},
       h("p", {}, st.message),
       pct != null ? h("div", { class: "progress wide" }, h("div", { style: `width:${pct}%` })) : "",
-      h("p", { class: "muted small" }, "«Пауза» замирает на ближайшей реплике и продолжает с того же места. «Остановить и удалить озвучку» возвращает реплики этого запуска в «ждут озвучки»; озвученное раньше и одобренное остаётся.")),
+      h("p", { class: "muted small" }, "Готовые персонажи появляются в шаге «Проверка», пока идут остальные. «Пауза» замирает на ближайшей реплике; «Остановить и удалить озвучку» возвращает реплики этого запуска в «ждут озвучки», озвученное раньше остаётся.")),
       jobButtons(info.status), "active");
   }
   const left = n("translated");
-  const text = `Озвучено ${generatedAll} из ${s.total - n("skipped")} реплик.` +
-    (left ? ` Ещё не озвучено: ${left}.` : "") +
+  if (!generatedAll) {
+    return card(3, "Озвучка всей игры", info.samples ? "После одобрения проб вся игра озвучивается одним нажатием; готовые персонажи можно слушать по ходу."
+      : "Станет доступна после подготовки и проб.",
+      info.samples ? [h("button", { class: "btn primary big", disabled: busy, onclick: () => runSteps(["generate"]) }, "Озвучить всю игру")] : null,
+      info.samples ? "active" : "pending");
+  }
+  const text = `Озвучено ${generatedAll} из ${s.total - n("skipped")} реплик.` + (left ? ` Ещё не озвучено: ${left}.` : "");
+  return card(3, "Озвучка всей игры", text, [
+    left ? h("button", { class: "btn primary", disabled: busy, onclick: () => runSteps(["generate"]) }, `Озвучить оставшиеся (${left})`) : "",
+    h("button", { class: "btn subtle small", disabled: busy, onclick: () => { studio.step = 4; renderStudioBody(); } }, "К проверке →"),
+  ], left ? "active" : "done");
+}
+
+function stepReview(info, s, n, generatedAll, busy) {
+  if (!generatedAll && !Object.values(info.review || {}).some(st => st.state === "ready")) {
+    return card(4, "Проверка", "После озвучки: послушать персонажей, одобрить хорошее, переозвучить слабое с комментарием.", null, "pending");
+  }
+  const text = (n("generated") ? `На прослушивании ${n("generated")}.` : "") +
     (s.rework ? ` Контролёр отметил слабых: ${s.rework} — их стоит послушать или переозвучить.` : " Контролёр замечаний не нашёл.") +
     (n("approved") ? ` Одобрено: ${n("approved")}.` : "");
-  return card(3, "Озвучка всей игры", text, [
-    h("button", { class: "btn primary", disabled: busy, onclick: () => { studio.view = "lines"; studio.filters = { status: s.rework ? "rework" : "generated", char: "", q: "", offset: 0 }; renderStudio(); } }, "Прослушать и одобрить"),
+  return card(4, "Проверка", h("div", {}, h("p", { class: "muted" }, text), reviewPanel(info, busy)), [
+    h("button", { class: "btn primary", disabled: busy, onclick: () => { studio.view = "lines"; studio.filters = { status: s.rework ? "rework" : "generated", char: "", q: "", offset: 0 }; renderStudio(); } }, "Прослушать реплики"),
     h("button", { class: "btn ok", disabled: busy || !n("generated"), onclick: approveGood }, "✓ Одобрить все хорошие"),
     s.rework ? h("button", { class: "btn", disabled: busy, onclick: regenRework }, `⟳ Переозвучить слабые (${s.rework})`) : "",
-    left ? h("button", { class: "btn", disabled: busy, onclick: () => runSteps(["generate"]) }, `Озвучить оставшиеся (${left})`) : "",
   ], n("approved") && !n("generated") ? "done" : "active");
 }
 
