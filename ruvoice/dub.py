@@ -29,7 +29,11 @@ from .paths import DATA_DIR
 from .project import Project
 
 DEFAULT_SETTINGS = {
-    "speech_engine": "auto",    # capability-based backend selection; no game-dependent branches
+    "speech_source": "auto",     # источник русской речи (ступень 1): auto | ru | custom | silero | omnivoice
+    "clone_engine": "auto",      # быстрый путь эпизодических: клонирование с английской записи: auto | ru | voxcpm | omnivoice
+    "episodic_mode": "clone",    # эпизодические персонажи: clone — клонировать с записи; donor — донорский русский голос
+    "timbre_level": "normal",    # обучение тембра главных персонажей: off / fast / normal / deep (timbre.TIMBRE_LEVELS)
+    "timbre_min_seconds": 120,   # главный персонаж — от стольких секунд речи (и от 12 реплик)
     "preserve_performance": True,
     "effects_mode": "unknown",  # unknown / engine / dry / baked; explicit acoustic routing
     "text_source": "official",   # official — официальные русские субтитры; llm — перевести всё нейросетью
@@ -37,41 +41,16 @@ DEFAULT_SETTINGS = {
     "glossary": "",
     "translator": "auto",        # auto | qwen3-14b | qwen3-8b | qwen3-4b
     "quality": "normal",         # fast — 1 вариант; normal — 3; thorough — 5 (контролёр выбирает лучший)
-    "stable_voice": True,        # один отпечаток на персонажа, строгий тембр, выбор варианта по сходству с его репликами
     "director": True,            # режиссёр (языковая модель) готовит подачу каждой реплики по оригиналу
-    "emotion_refs": False,       # образец голоса под эмоцию из реплик персонажа (живее, но голос «плавает»)
     "judge": True,               # проверять реплики контролёром
     "autofix": True,             # после контролёра переозвучить проблемные реплики с большим числом вариантов
     "max_speedup": 1.1,          # русская фраза длиннее — ускоряем не более чем на 10 %, остальное остаётся длиннее
-    "train_limit": 8,            # главных персонажей — полное обучение
-    "train_minutes": 12,         # минут записей на главного персонажа
-    "train_epochs": 300,         # эпох обучения RVC на главного персонажа
-    "train_min_seconds": 120,    # остальные персонажи с таким запасом записей — короткое обучение
-    "minor_minutes": 5,
-    "minor_epochs": 150,
     "auto_install": False,       # после подготовки сразу озвучить всю игру и установить без прослушивания
-    "voice_transfer": False,     # дополнительно обучать RVC-голоса и переносить тембр (редко нужно)
-    "ft_level": "medium",        # дообучение модели речи под голос главных персонажей: off / light / medium / deep
-                                 # (FT_LEVELS). Дообученный голос проверяется на репликах вне обучения и отключается,
-                                 # если звучит хуже отпечатка (текст, высота голоса, похожесть) — хуже не станет
-    "tts_finetune": True,        # выводится из ft_level (оставлено для старых проектов)
-    "ft_min_seconds": 150,       # дообучаются персонажи с таким запасом речи
-    "ft_minutes": 15,            # выводится из ft_level
-    "ft_epochs": 4,              # выводится из ft_level
-    "ft_method": "auto",         # auto — полное при 14 ГБ видеопамяти и больше, иначе LoRA; full; lora
     "event_gap": 0.3,            # пауза (с) из оригинала после смеха/вздоха перед русской речью
 }
-SETTINGS_VERSION = 2             # 2: перевод реплик без субтитров по умолчанию выключен
-# Уровни дообучения: минут записей и эпох на персонажа, сколько главных персонажей обучать
-FT_LEVELS = {
-    "off": None,
-    "light": {"name": "Быстрое", "minutes": 8, "epochs": 3, "limit": 4},
-    "medium": {"name": "Среднее", "minutes": 15, "epochs": 4, "limit": 8},
-    "deep": {"name": "Долгое", "minutes": 25, "epochs": 6, "limit": 12},
-}
-FT_SEC_PER_MIN_EPOCH = 8.0       # секунд обучения на минуту записей за эпоху (RTX 5070 Ti, полное, пачка 1)
-FT_OVERHEAD_SEC = 120            # подбор записей, коды речи, проверка на контрольных репликах
-FT_DISK_GB = {"full": 4.0, "lora": 0.05}
+SETTINGS_VERSION = 3             # 3: конвейер v2 (донор + тембр), старые настройки дообучения убраны
+DEFAULT_SOURCE = "ru"            # умолчания «auto» — уточняются по стенду движков (спецификация, раздел 8)
+DEFAULT_CLONE = "ru"
 CANDIDATES = {"fast": 1, "normal": 3, "thorough": 5}
 FIX_EXTRA = 3                    # сколько вариантов добавлять при переозвучке проблемной реплики
 VOICE_VARIANTS = ["voxcpm", "ru", "custom"]
@@ -204,21 +183,15 @@ class DubJobs:
 
     def settings(self, gid: str) -> dict:
         stored = dict(self.project(gid).get("settings") or {})
-        if stored.get("_v", 0) < SETTINGS_VERSION:  # проект старой версии: убрать настройки, чей смысл изменился
-            stored = {k: v for k, v in stored.items() if k in DEFAULT_SETTINGS and k != "translate_missing"}
+        if stored.get("_v", 0) < SETTINGS_VERSION:  # проект старой версии: убрать настройки, чьего смысла больше нет
+            drop = {"translate_missing"} if stored.get("_v", 0) < 2 else set()
+            stored = {k: v for k, v in stored.items() if k in DEFAULT_SETTINGS and k not in drop}
             stored["_v"] = SETTINGS_VERSION
             self.project(gid).set("settings", stored)
         base = dict(DEFAULT_SETTINGS)
         if "quality" not in stored and self._big_gpu():
             base["quality"] = "thorough"  # 24 ГБ и больше: 5 вариантов реплики помещаются одной пачкой
-        s = {**base, **{k: v for k, v in stored.items() if k in DEFAULT_SETTINGS}}
-        # уровень дообучения задаёт минуты, эпохи и число персонажей (старое «tts_finetune» не учитываем:
-        # раньше оно было выключено по умолчанию, а не выбрано пользователем)
-        lvl = FT_LEVELS.get(s.get("ft_level")) if s.get("ft_level") in FT_LEVELS else FT_LEVELS["medium"]
-        s["tts_finetune"] = lvl is not None
-        if lvl:
-            s["ft_minutes"], s["ft_epochs"], s["ft_limit"] = lvl["minutes"], lvl["epochs"], lvl["limit"]
-        return s
+        return {**base, **{k: v for k, v in stored.items() if k in DEFAULT_SETTINGS}}
 
     _big: bool | None = None
 
@@ -469,7 +442,7 @@ class DubJobs:
             return refs
         if engine == "ru":
             refs = {}
-            use_ft = {**DEFAULT_SETTINGS, **(p.get("settings") or {})}["tts_finetune"]
+            use_ft = {**DEFAULT_SETTINGS, **(p.get("settings") or {})}.get("tts_finetune", False)
             for c in chars:
                 from . import identity
                 anchor = identity.active(p, c, engine)
@@ -495,7 +468,7 @@ class DubJobs:
         emo = (style or {}).get("emotion")
         if ref.get("identity"):
             return ref  # Identity is fixed; emotion may change, the reference may not.
-        if not {**DEFAULT_SETTINGS, **(p.get("settings") or {})}["emotion_refs"]:
+        if not {**DEFAULT_SETTINGS, **(p.get("settings") or {})}.get("emotion_refs", False):
             return ref  # один отпечаток на персонажа: голос не «плавает» от реплики к реплике
         if engine == "ru" and not ref.get("voice") and not ref.get("ckpt") and emo and emo not in ("neutral", "calm"):
             ep = self.character_profile(p, line["char"], emotion=emo)
@@ -595,104 +568,6 @@ class DubJobs:
 
     def variant_info(self, gid: str) -> dict:
         return {"index": self._take(gid) + 1, "engine": self._engine_for(gid) if available_tts() else None}
-
-    def train_plan(self, gid: str) -> dict:
-        """Кого обучаем автоматически: главные персонажи — полное обучение, остальные с достаточным
-        числом записей — короткое; совсем короткие роли говорят голосом подобранного диктора."""
-        p, s = self.project(gid), self.settings(gid)
-        from . import accel
-        if self._engine_for(gid) != "ru" and not s["voice_transfer"]:
-            return {"planned": [], "trained": 0, "total": 0, "main": 0, "cpu": False,
-                    "kind": "reference", "off": True, "skipped": []}
-        if s["tts_finetune"] and not s["voice_transfer"]:
-            min_sec = float(s["ft_min_seconds"])
-            sel = self.selected(p)
-            chars = [c for c in p.characters() if c["id"] in sel and (c["seconds"] or 0) >= min_sec]
-            chars.sort(key=lambda c: -(c["lines"] or 0))
-            chars = chars[: int(s.get("ft_limit") or 8)]  # главные персонажи; остальные — по отпечатку голоса
-            planned = [{"id": c["id"], "name": c["name"], "minutes": round((c["seconds"] or 0) / 60, 1),
-                        "trained": c["id"] in (p.get("tts_voices") or {}), "tier": "tts",
-                        "epochs": int(s["ft_epochs"]), "max_seconds": float(s["ft_minutes"]) * 60} for c in chars]
-            return {"planned": planned, "trained": len([c for c in planned if c["trained"]]), "total": len(planned),
-                    "main": len(planned), "cpu": accel.device() != "cuda", "kind": "tts",
-                    "skipped": [c["name"] for c in p.characters() if c["id"] in sel and (c["seconds"] or 0) < min_sec][:12]}
-        if not s["voice_transfer"]:
-            return {"planned": [], "trained": 0, "total": 0, "main": 0, "cpu": False, "skipped": [], "off": True}
-        min_sec = float(s["train_min_seconds"])
-        sel = self.selected(p)
-        chars = [c for c in p.characters() if c["id"] in sel and (c["seconds"] or 0) >= min_sec]
-        chars.sort(key=lambda c: -(c["lines"] or 0))
-        planned = []
-        for i, c in enumerate(chars):
-            main = i < int(s["train_limit"])
-            planned.append({"id": c["id"], "name": c["name"], "minutes": round((c["seconds"] or 0) / 60, 1),
-                            "trained": self._voice(p, c["id"]) is not None, "tier": "main" if main else "minor",
-                            "epochs": int(s["train_epochs"] if main else s["minor_epochs"]),
-                            "max_seconds": float(s["train_minutes"] if main else s["minor_minutes"]) * 60})
-        return {"planned": planned, "trained": len([c for c in planned if c["trained"]]), "total": len(planned),
-                "main": len([c for c in planned if c["tier"] == "main"]), "cpu": accel.device() != "cuda", "kind": "rvc",
-                "skipped": [c["name"] for c in p.characters() if c["id"] in sel and (c["seconds"] or 0) < min_sec][:12]}
-
-    # --- уровни дообучения: оценка времени и места ---
-
-    def ft_setup(self) -> dict:
-        """Как дообучать на этой видеокарте: полное (от 14 ГБ) или LoRA, пачка 2 на картах от 24 ГБ
-        (накопление градиента подстраивается — итоговый шаг тот же, качество не меняется, быстрее)."""
-        from . import accel
-        try:
-            vram = accel.info().get("vram_gb") or 0
-        except Exception:
-            vram = 0
-        method = "full" if vram >= 14 else "lora"
-        batch = 2 if vram >= 22 else 1
-        return {"method": method, "batch": batch, "accum": max(1, 8 // batch), "vram": vram}
-
-    def _ft_rate(self) -> float:
-        """Секунд обучения на минуту записей за эпоху: по прошлым обучениям на этом компьютере, иначе по замеру."""
-        import json
-        f = DATA_DIR / "train_speed.json"
-        try:
-            hist = json.loads(f.read_text("utf-8"))
-            vals = sorted(x["rate"] for x in hist[-10:] if x.get("rate"))
-            if vals:
-                return vals[len(vals) // 2]
-        except Exception:
-            pass
-        return FT_SEC_PER_MIN_EPOCH
-
-    def _ft_record(self, rate: float, method: str, batch: int):
-        import json
-        f = DATA_DIR / "train_speed.json"
-        try:
-            hist = json.loads(f.read_text("utf-8")) if f.exists() else []
-        except Exception:
-            hist = []
-        hist = (hist + [{"rate": round(rate, 2), "method": method, "batch": batch, "at": time.time()}])[-20:]
-        f.write_text(json.dumps(hist), "utf-8")
-
-    def train_levels(self, gid: str) -> dict:
-        """Для экрана студии: сколько персонажей, времени и места займёт каждый уровень дообучения."""
-        p, s = self.project(gid), self.settings(gid)
-        setup = getattr(self, "_ft_setup_cache", None) or self.ft_setup()
-        self._ft_setup_cache = setup
-        rate = self._ft_rate() * (0.65 if setup["batch"] > 1 else 1.0)
-        min_sec = float(s["ft_min_seconds"])
-        chars = sorted((c for c in p.characters() if (c["seconds"] or 0) >= min_sec), key=lambda c: -(c["lines"] or 0))
-        trained = p.get("tts_voices") or {}
-        out = {}
-        for key, lvl in FT_LEVELS.items():
-            if not lvl:
-                out[key] = {"name": "Без обучения", "chars": 0, "minutes": 0, "disk_gb": 0}
-                continue
-            pick = chars[: lvl["limit"]]
-            todo = [c for c in pick if c["id"] not in trained]
-            sec = sum(min((c["seconds"] or 0) / 60, lvl["minutes"]) * lvl["epochs"] * rate + FT_OVERHEAD_SEC for c in todo)
-            out[key] = {"name": lvl["name"], "chars": len(pick), "todo": len(todo), "minutes": round(sec / 60),
-                        "per_char": round((lvl["minutes"] * lvl["epochs"] * rate + FT_OVERHEAD_SEC) / 60, 1),
-                        "disk_gb": round(len(pick) * FT_DISK_GB[setup["method"]], 1),
-                        "names": [c["name"] for c in pick][:6]}
-        return {"levels": out, "current": s["ft_level"], "method": setup["method"], "batch": setup["batch"],
-                "vram": setup["vram"]}
 
     # --- шаги ---
 
@@ -1121,7 +996,7 @@ class DubJobs:
         use_judge = self._judge_ready(gid)
         info = accel.info()
         inline_asr = use_judge and info["device"] == "cuda" and (info["vram_gb"] or 0) >= 10
-        stable = bool(s["stable_voice"]) and engine in ("ru", "voxcpm")
+        stable = bool(s.get("stable_voice", True)) and engine in ("ru", "voxcpm")
         use_ecapa = stable and judge.ecapa_ready()
         if any((p.get("voice_anchors") or {}).get(l["char"]) for l in lines) and not use_ecapa:
             raise RuntimeError("Для закреплённого голоса включите стабильность голоса и установите ECAPA")
@@ -1136,7 +1011,7 @@ class DubJobs:
         report("Профили голосов персонажей…")
         chars = {l["char"] for l in lines}
         refs = self._refs_for(p, engine, chars)
-        voices = {c: self._voice(p, c) for c in chars} if s["voice_transfer"] else {}
+        voices = {c: self._voice(p, c) for c in chars} if s.get("voice_transfer") else {}
         profiles = {}
         if use_judge:
             for c in chars:
@@ -1708,7 +1583,7 @@ class DubJobs:
         elif engine == "ru":
             tts.load_ru()
         outs = []
-        stable = bool(self.settings(gid)["stable_voice"]) and engine in ("ru", "voxcpm")
+        stable = bool(self.settings(gid).get("stable_voice", True)) and engine in ("ru", "voxcpm")
         for l in lines:  # по одной: у каждой реплики своя подача под эмоцию оригинала
             params = {"speaker": ref.get("speaker"), **self._style_params(p, l, engine)}
             deliv = (l["info"] or {}).get("delivery") or {}
@@ -1975,7 +1850,7 @@ class DubJobs:
             step(gid)
         from . import accel
         s = self.settings(gid)
-        if s["tts_finetune"] and not s["voice_transfer"] and self._engine_for(gid) == "ru":
+        if s.get("tts_finetune") and not s.get("voice_transfer") and self._engine_for(gid) == "ru":
             plan = self.train_plan(gid)
             todo = [c for c in plan["planned"] if not c["trained"]]
             sample_ids = {c["id"] for c in self._sample_chars(p)}
@@ -1991,7 +1866,7 @@ class DubJobs:
                     if self.cancel_flag.is_set():
                         return
                     print(f"дообучение голоса {c['name']} не удалось: {e}")
-        elif not s["voice_transfer"]:
+        elif not s.get("voice_transfer"):
             pass
         elif rvc_available():
             plan = self.train_plan(gid)
@@ -2059,7 +1934,7 @@ class DubJobs:
             step = max(1, len(cands) // SAMPLE_LINES)
             lines = cands[::step][:SAMPLE_LINES]
             try:
-                voice = self._voice(p, c["id"]) if self.settings(gid)["voice_transfer"] else None
+                voice = self._voice(p, c["id"]) if self.settings(gid).get("voice_transfer") else None
                 files, sim = self._render(gid, p, c["id"], lines, engine, voice,
                                           p.dir / "samples" / _safe(c["id"]), seed=100003 * take if take else None)
             except Exception as e:
@@ -2398,6 +2273,13 @@ def _is_sfx_text(text: str | None) -> bool:
         return True
     letters = re.sub(r"[^A-Za-zА-Яа-яЁё]", "", t)
     return len(letters) >= 6 and len(set(letters.lower())) <= 2  # «AHHHHH», «Mmmm»
+
+
+def line_seed(line_id: str, take: int, k: int) -> int:
+    """Зерно варианта k реплики при прогоне take: повторная озвучка даёт тот же результат, «переделать пробы»
+    (другой take) — другой."""
+    import zlib
+    return (zlib.crc32(line_id.encode("utf-8")) ^ (100003 * (take + 1) + 977 * k)) & 0x7FFFFFFF
 
 
 def _safe(s: str) -> str:

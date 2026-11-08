@@ -467,7 +467,8 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
             dub.enqueue(gid, "train_voice", char=body.char, steps=max(20, min(body.steps, 3000)))
         else:
             s = dub.settings(gid)
-            dub.enqueue(gid, "train_tts", char=body.char, max_seconds=float(s["ft_minutes"]) * 60, epochs=int(s["ft_epochs"]))
+            dub.enqueue(gid, "train_tts", char=body.char, max_seconds=float(s.get("ft_minutes", 15)) * 60,
+                        epochs=int(s.get("ft_epochs", 4)))
         return dub.status(gid)
 
     @r.post("/projects/{gid:path}/judge")
@@ -707,8 +708,11 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
                         voices={**{k: {**v, "method": "rvc"} for k, v in (p.get("voices") or {}).items() if dub._voice(p, k)},
                                 **{k: {**v, "method": "tts"} for k, v in (p.get("tts_voices") or {}).items() if dub._tts_voice(p, k)}},
                         samples=p.get("samples"), prepared=bool(p.get("prepared_at")),
-                        voice_variant=dub.variant_info(gid), train_plan=dub.train_plan(gid),
-                        train_levels=dub.train_levels(gid),
+                        voice_variant=dub.variant_info(gid),
+                        # обучение тембра (timbre.plan / timbre.estimate) подключается в задаче 10 плана v2
+                        train_plan={"planned": [], "trained": 0, "total": 0, "main": 0, "cpu": False,
+                                    "kind": "rvc", "off": True, "skipped": []},
+                        train_levels=None,
                         bench=p.get("bench") or [], previews=p.get("previews") or [], voice_f0=p.get("voice_f0") or {},
                         review=p.get("review") or {}, char_notes=p.get("char_notes") or {},
                         voice_anchors=p.get("voice_anchors") or {},
