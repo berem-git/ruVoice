@@ -40,6 +40,12 @@ def available() -> bool:
     return _load() is not None
 
 
+def unload():
+    global _engine
+    with _lock:
+        _engine = None
+
+
 def plus(text: str) -> str:
     """Текст с «+» перед ударной гласной (как у Silero). Односложные слова без ударения."""
     if not text or not re.search(r"[А-Яа-яЁё]", text):

@@ -613,6 +613,8 @@ def create_router(lib: Library, dub: DubJobs) -> APIRouter:
                            and ((l["info"] or {}).get("judge") or {}).get("verdict") != "rework"]
         with p.db() as c:
             c.executemany("UPDATE lines SET status=? WHERE id=?", [(body.status, l["id"]) for l in targets])
+        if body.status == "rejected" and targets:
+            dub.tidy_idle_project(gid)
         return {"changed": len(targets)}
 
     @r.post("/projects/{gid:path}/regenerate")

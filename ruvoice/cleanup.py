@@ -38,7 +38,7 @@ def _remove(path: Path, dry: bool) -> int:
         return 0
     if not dry and path.exists():
         try:
-            shutil.rmtree(path, ignore_errors=True) if path.is_dir() else path.unlink(missing_ok=True)
+            shutil.rmtree(path) if path.is_dir() else path.unlink(missing_ok=True)
         except OSError:
             return 0
     return n
@@ -61,7 +61,13 @@ def project_garbage(pdir: Path, dry: bool = True) -> dict:
             items.append((f"{path.relative_to(pdir)} — {why}", n))
 
     gen = pdir / "gen"
-    used = {r["gen"].replace("\\", "/") for r in c.execute("SELECT gen FROM lines WHERE gen IS NOT NULL")}
+    recordings = c.execute("SELECT id, gen, status FROM lines WHERE gen IS NOT NULL").fetchall()
+    discarded = [r["id"] for r in recordings if r["status"] == "rejected"]
+    if discarded and not dry:
+        with c:
+            c.executemany("UPDATE lines SET gen=NULL, gen_duration=NULL WHERE id=? AND status='rejected'",
+                          [(ident,) for ident in discarded])
+    used = {r["gen"].replace("\\", "/") for r in recordings if r["status"] != "rejected"}
     if gen.is_dir():
         for f in gen.iterdir():
             rel = f"gen/{f.name}"
@@ -83,15 +89,24 @@ def project_garbage(pdir: Path, dry: bool = True) -> dict:
                 drop(v / old, "старая модель тембра без контроля")
             rvc = v / "rvc"
             if rvc.is_dir():
-                drop(rvc / "dataset", "рабочая папка обучения тембра")
-                if not (rvc / "meta.json").exists():
+                if (rvc / "meta.json").exists():
+                    drop(rvc / "dataset", "рабочая папка обучения тембра")
+                    drop(rvc / "calib", "аудио проверки тембра")
+                else:
                     drop(rvc, "незавершённое обучение тембра")
     drop(pdir / "voice_identities", "старые эталоны голоса (1.0.0)")
     samples = pdir / "samples"
+    sample_files = {str(x["file"]).replace("\\", "/")
+                    for char in (meta.get("samples") or {}).get("chars", [])
+                    for x in char.get("items", []) if x.get("file")}
     if samples.is_dir():
         for d in samples.iterdir():
             if d.name.startswith("test_"):
                 drop(d, "пробная папка")
+            elif d.is_dir() and not d.is_symlink():
+                for f in d.glob("*.wav"):
+                    if f.relative_to(pdir).as_posix() not in sample_files:
+                        drop(f, "проба заменена")
     drop(pdir / "compare", "старое сравнение голосов")
     bench = pdir / "bench"
     if bench.is_dir():
@@ -128,6 +143,15 @@ def project_garbage(pdir: Path, dry: bool = True) -> dict:
     c.close()
     return {"bytes": sum(n for _, n in items), "items": [f"{t} ({n / 2**20:.0f} МБ)" for t, n in items[:50]],
             "fixed_lines": fixed}
+
+
+def training_garbage(project: str, dry: bool = True) -> int:
+    """Временные данные Applio после отменённого или неудачного обучения."""
+    if not project or any(not (c.isascii() and (c.isalnum() or c in "_-")) for c in project):
+        return 0
+    root = PROJECT_DIR / "runtime" / "engines" / "rvc" / "applio" / "logs"
+    return sum(_remove(path, dry) for path in root.glob(f"{project}__*")
+               if path.is_dir() and path.resolve().parent == root.resolve())
 
 
 # --- после установки в игру: «минимум» ---
@@ -198,6 +222,10 @@ def all_garbage(dry: bool = True, skip: set[str] | None = None) -> dict:
             if d.is_dir() and d.name not in (skip or set()):
                 try:
                     g = project_garbage(d, dry)
+                    training = training_garbage(d.name, dry)
+                    if training:
+                        g["bytes"] += training
+                        g["items"].append(f"временные данные Applio ({training / 2**20:.0f} МБ)")
                 except Exception as e:
                     g = {"bytes": 0, "items": [f"ошибка: {e}"], "fixed_lines": 0}
                 res["projects"][d.name] = g

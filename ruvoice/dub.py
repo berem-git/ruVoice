@@ -351,6 +351,15 @@ class DubJobs:
                             (p.dir / old["gen"]).unlink(missing_ok=True)
                         except OSError as e:
                             print(f"Удаление прежней озвучки {old['gen']}: {e}")
+                if task in {"prepare", "samples", "generate", "judge", "redirect", "train_voice", "install"}:
+                    self._tidy_project(gid)
+                    if self.q.empty():
+                        from . import accent, asr, basevoices, judge, pron, tts
+                        for module in (accent, basevoices, tts, asr, pron, judge):
+                            try:
+                                module.unload()
+                            except Exception as e:
+                                print(f"Выгрузка модели {module.__name__}: {e}")
                 st.pop("_keep_message", None)
                 st["task"] = None
                 self.current = None
@@ -358,6 +367,21 @@ class DubJobs:
                 self.clear_job()  # задача закончилась сама, с ошибкой или остановлена — продолжать нечего
                 if self.q.empty():
                     self._release_translator()
+
+    def _tidy_project(self, gid: str):
+        from . import cleanup
+        from .project import project_id
+        path = cleanup.PROJECTS_DIR / project_id(gid)
+        try:
+            cleanup.project_garbage(path, dry=False)
+            cleanup.training_garbage(path.name, dry=False)
+        except Exception as e:
+            print(f"Уборка проекта «{gid}»: {e}")
+
+    def tidy_idle_project(self, gid: str):
+        with self._cleanup_lock:
+            if self.current != gid:
+                self._tidy_project(gid)
 
     def _progress(self, gid: str):
         st = self.state[gid]
@@ -1909,8 +1933,6 @@ class DubJobs:
             return
         self._do_samples(gid)
         p.set("prepared_at", time.time())
-        from . import cleanup
-        cleanup.project_garbage(p.dir, dry=False)
         if self.settings(gid)["auto_install"]:  # режим «на ночь»: дальше без участия пользователя
             self.enqueue(gid, "generate")
             self._finish(gid, "Подготовка завершена — озвучиваем всю игру и ставим без прослушивания")

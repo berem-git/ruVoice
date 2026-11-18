@@ -47,9 +47,25 @@ class CleanupV2Tests(unittest.TestCase):
     def test_rvc_model_with_meta_is_kept(self):
         d = self.p.dir
         cleanup.project_garbage(d, dry=False)
-        for rel in ("voices/hero/rvc/model.pth", "voices/hero/rvc/model.index", "voices/hero/rvc/meta.json", "voices/hero/rvc/calib/rvc/a.wav"):
+        for rel in ("voices/hero/rvc/model.pth", "voices/hero/rvc/model.index", "voices/hero/rvc/meta.json"):
             self.assertTrue((d / rel).exists(), rel)
         self.assertFalse((d / "voices/hero/rvc/dataset").exists())
+        self.assertFalse((d / "voices/hero/rvc/calib").exists())
+
+    def test_rejected_audio_is_removed_but_can_be_regenerated(self):
+        self.p.add_lines([{"id": "bad", "char": "hero", "orig": "orig/bad.wav", "en": "Hi"}])
+        self.p.gen_dir.mkdir(exist_ok=True)
+        wav = self.p.gen_dir / "bad.wav"
+        wav.write_bytes(b"temporary audio")
+        self.p.update_line("bad", ru="Привет", status="rejected", gen="gen/bad.wav",
+                           info={"judge": {"verdict": "rework"}})
+        self.assertGreater(cleanup.project_garbage(self.p.dir, dry=True)["bytes"], 0)
+        self.assertTrue(wav.exists())
+        cleanup.project_garbage(self.p.dir, dry=False)
+        self.assertFalse(wav.exists())
+        line = self.p.line("bad")
+        self.assertEqual((line["status"], line["ru"], line["gen"]), ("rejected", "Привет", None))
+        self.p.close()
 
     def test_unfinished_and_legacy_rvc_dirs_are_garbage(self):
         d = self.p.dir

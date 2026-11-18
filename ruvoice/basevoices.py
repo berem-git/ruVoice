@@ -35,6 +35,12 @@ def available() -> bool:
     return MODEL.exists()
 
 
+def unload():
+    global _model
+    with _lock:
+        _model = None
+
+
 def _load():
     global _model
     with _lock:
