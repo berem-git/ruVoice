@@ -15,9 +15,6 @@ const STEP_NAMES = {
   prepare: "Подготовка", samples: "Пробы голосов", install: "Установка в игру", uninstall: "Удаление озвучки",
   restore_originals: "Возврат оригиналов",
 };
-const QUALITY = { fast: "Быстро — 1 вариант на реплику", normal: "Обычно — 2 варианта, контролёр выбирает лучший",
-  thorough: "Тщательно — 4 варианта (в 3–4 раза дольше)" };
-
 const studio = { gid: null, info: null, view: "flow", timer: null, filters: { status: "", char: "", q: "", offset: 0 } };
 const PAGE = 50;
 
@@ -331,7 +328,7 @@ function stepPrepare(info, s, busy, stage) {
       pct != null ? h("div", { class: "progress wide" }, h("div", { style: `width:${pct}%` })) : "",
       h("p", { class: "muted small" }, "Реплики → русский текст → кто говорит → тембр главных → пробы. Это долго; программу можно свернуть.",
         info.settings?.auto_install ? " Режим «без прослушивания»: после подготовки игра озвучится и установится сама." : ""),
-      timbreLevelPicker(info, true)),
+      h("p", { class: "muted small" }, "Программа проверяет русский образец голоса на нескольких фразах и подбирает высоту под персонажа.")),
       jobButtons(info.status), "active");
   }
   if (!info.prepared) {
@@ -339,7 +336,7 @@ function stepPrepare(info, s, busy, stage) {
       ? `Реплики уже извлечены (${s.total}). Осталось подготовить текст, обучить тембр главных персонажей и сделать пробы.`
       : "Программа достанет реплики из игры, подготовит русский текст, разберётся, кто говорит, обучит тембр главных персонажей и покажет пробы. В игру ничего не записывается до вашего одобрения.";
     return card(1, "Подготовка", h("div", {}, h("p", { class: "muted" }, text),
-      h("details", { class: "more" }, h("summary", {}, "Тембр главных персонажей и режим без прослушивания"), timbreLevelPicker(info, busy), autoInstallCheck(info))),
+      autoInstallCheck(info)),
       [h("button", { class: "btn primary big", disabled: busy || modelsMissing(), title: modelsMissing() ? "Сначала скачайте набор нейросетей (шаг 0)" : "", onclick: () => run("/prepare") }, info.extracted ? "Продолжить подготовку" : "Начать"),
        modelsMissing() && h("span", { class: "muted small" }, "Сначала скачайте нейросети в шаге 0")], "active");
   }
@@ -350,34 +347,8 @@ function stepPrepare(info, s, busy, stage) {
   const noSubNote = s.total - s.with_official > 0 ? ` Без русских субтитров ${s.total - s.with_official} — они останутся с оригинальным голосом.` : "";
   return card(1, "Подготовка завершена",
     h("div", {}, h("p", { class: "muted" }, `Реплик: ${s.total}, персонажей: ${info.characters.length}, минут речи: ${Math.round(s.seconds / 60)}. Официальный русский текст у ${s.with_official}.${noSubNote} ${voicesNote}`),
-      timbreLevelPicker(info, busy)),
+      ""),
     [h("button", { class: "btn subtle small", disabled: busy, onclick: () => confirm("Подготовить заново (текст и пробы; обученные тембры останутся)?") && run("/restart") }, "Подготовить заново")], "done");
-}
-
-// Уровень обучения тембра: сколько главных персонажей, времени и места займёт каждый (оценка по этому компьютеру)
-function timbreLevelPicker(info, busy) {
-  const t = info.timbre;
-  if (!t || !t.levels) return "";
-  const cur = info.settings?.timbre_level || t.current || "normal";
-  const save = async lvl => { studio.info.settings = await api("POST", projUrl("/settings"), { timbre_level: lvl }); refreshStudio(); };
-  const fmtMin = m => m >= 90 ? `~${Math.round(m / 6) / 10} ч` : `~${m} мин`;
-  const opt = (key, extra) => {
-    const l = t.levels[key];
-    if (!l) return "";
-    const what = key === "off" ? "никого не обучать — все персонажи быстрым путём"
-      : !l.chars ? (info.prepared ? "главных персонажей нет (меньше 2 минут речи у каждого)" : "главные персонажи появятся после подготовки")
-      : `${l.chars} гл. персонажей, ${l.todo ? fmtMin(l.minutes) : "уже обучены"}, ~${l.disk_gb} ГБ на диске`;
-    return h("label", { class: "radio", title: (l.names || []).join(", ") },
-      h("input", { type: "radio", name: "timbre_level", checked: cur === key, disabled: busy, onchange: () => save(key) }),
-      h("span", {}, h("b", {}, l.name), ` — ${what}`, extra ? h("span", { class: "muted small" }, extra) : ""));
-  };
-  const need = cur !== "off" && (t.levels[cur]?.todo || 0) > 0 && info.prepared && t.ready;
-  return h("div", { class: "train-levels" },
-    h("div", { class: "small" }, h("b", {}, "Тембр главных персонажей"),
-      h("span", { class: "muted" }, t.ready ? " · перенос тембра установлен" : " · перенос тембра не установлен (⋯ → Система и ускорение → Среды движков)")),
-    opt("off"), opt("fast"), opt("normal", " · рекомендуем"), opt("deep", " · если «обычно» нравится не до конца"),
-    h("p", { class: "muted small" }, "Главный персонаж — от 2 минут речи и 12 реплик (уровень можно поменять вручную на панели «Голоса»). Тембр обучается на его записях и проверяется на репликах вне обучения: если голос не стал ближе к персонажу, читает хуже или ушёл по высоте — модель не используется, персонаж идёт быстрым путём. Время — оценка по этой видеокарте."),
-    need ? h("button", { class: "btn small", disabled: busy, onclick: () => run("/prepare") }, `Обучить сейчас (${fmtMin(t.levels[cur].minutes)})`) : "");
 }
 
 // Галочка «на ночь»: после подготовки сразу озвучить всю игру и установить, не слушая пробы
@@ -667,8 +638,6 @@ function settingsPanel(info) {
       h("h3", {}, "Словарь имён и терминов"),
       h("p", { class: "muted small" }, "По одному на строку: «Английское = Русское». Переводчик будет использовать именно эти варианты."),
       glossary,
-      h("h3", {}, "Сколько стараться"),
-      Object.entries(QUALITY).map(([k, label]) => radio("quality", k, label)),
       h("h3", {}, "Откуда брать русский текст"),
       radio("text_source", "official", "Официальные русские субтитры (лучшее качество)"),
       radio("text_source", "llm", "Перевести всё нейросетью (долго: сначала распознаётся вся речь)"),

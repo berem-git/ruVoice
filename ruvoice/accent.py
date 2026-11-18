@@ -11,6 +11,8 @@ from .paths import PROJECT_DIR
 
 WORKDIR = PROJECT_DIR / "models" / "ruaccent"
 ACUTE = "́"
+RUSSIAN_VOWEL = r"[аеёиоуыэюяАЕЁИОУЫЭЮЯ]"
+STRESS = re.compile(r"\+(" + RUSSIAN_VOWEL + r")")
 _lock = threading.Lock()
 _engine = None
 _failed = False
@@ -57,12 +59,25 @@ def mark(text: str, engine: str) -> str:
     """Подготовить текст для движка: silero понимает «+» перед ударной гласной; CustomVoice знаки ударения
     ломают (проверено: «+» читает как «плюс», U+0301 рвёт слова, CER 0.17–0.86 против 0.00), поэтому ему
     достаётся только восстановленная «ё» — её модель читает верно."""
+    # У Qwen-RU ударение следует метке даже при неверном выборе омографа.
+    # RUAccent надёжнее разбирает слова со строчной буквы, чем в начале предложения.
+    if engine == "acute":
+        if ACUTE in text or STRESS.search(text):
+            return STRESS.sub(r"\1" + ACUTE, text)
+        normalized = text.lower()
+        t = plus(normalized)
+        if t == normalized:
+            return text
+        marked = STRESS.sub(r"\1" + ACUTE, t)
+        # Сохраняем регистр реплики, если модель расставила только ударения и «ё».
+        if marked.replace(ACUTE, "").replace("ё", "е") == normalized.replace("ё", "е"):
+            chars = iter(text)
+            return "".join(c if c == ACUTE else (c.upper() if next(chars).isupper() else c) for c in marked)
+        return marked
     t = plus(text)
     if engine == "silero":
         return t
-    if engine == "acute":  # русские дообучения Qwen3-TTS (ru-stress): U+0301 после ударной гласной
-        return re.sub(r"\+([аеёиоуыэюяАЕЁИОУЫЭЮЯ])", lambda m: m.group(1) + ACUTE, t)
-    return t.replace("+", "")
+    return STRESS.sub(r"\1", t)
 
 
 def strip(text: str) -> str:

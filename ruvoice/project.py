@@ -120,7 +120,8 @@ class Project:
                 return
             affected = {line["char"], char}
             info = dict(line["info"] or {})
-            for key in ("plan", "judge", "fix", "fix_history", "fit", "flag", "style", "trained", "engine"):
+            for key in ("plan", "judge", "fix", "fix_history", "fit", "flag", "style", "trained", "engine",
+                        "reference_policy", "voice_key", "candidate_rank", "dry_check", "consistency", "consistency_floor"):
                 info.pop(key, None)
             info["speaker_manual"] = True
             status = "skipped" if line["status"] == "skipped" else "translated" if line["ru"] else "new"

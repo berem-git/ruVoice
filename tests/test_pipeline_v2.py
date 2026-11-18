@@ -50,7 +50,6 @@ class ProjectCase(unittest.TestCase):
         self.jobs = DubJobs.__new__(DubJobs)
         self.jobs._projects = {self.gid: self.p}
         self.jobs.lib = Mock()
-        self.jobs._big_gpu = lambda: False
 
     def tearDown(self):
         self.p.close()
@@ -59,17 +58,22 @@ class ProjectCase(unittest.TestCase):
 
 
 class SettingsTests(ProjectCase):
-    def test_v2_settings_migrate_to_v3(self):
+    def test_v2_settings_migrate_to_current_version(self):
         self.p.set("settings", {"_v": 2, "ft_level": "deep", "voice_transfer": True, "quality": "fast", "stable_voice": False})
         s = self.jobs.settings(self.gid)
         self.assertEqual(s["quality"], "fast")
-        self.assertEqual(s["timbre_level"], "normal")
+        self.assertEqual(s["timbre_level"], "deep")  # умолчания — максимум качества
         self.assertEqual(s["timbre_min_seconds"], 120)
-        self.assertEqual(s["episodic_mode"], "clone")
+        self.assertEqual(s["episodic_mode"], "donor")
         self.assertNotIn("ft_level", s)
         self.assertNotIn("voice_transfer", s)
         self.assertNotIn("stable_voice", s)
-        self.assertEqual(self.p.get("settings")["_v"], 3)
+        self.assertEqual(self.p.get("settings")["_v"], dub.SETTINGS_VERSION)
+
+    def test_saved_english_clone_migrates_to_russian_reference(self):
+        self.p.set("settings", {"_v": 3, "episodic_mode": "clone", "quality": "fast"})
+        self.assertEqual(self.jobs.settings(self.gid)["episodic_mode"], "donor")
+        self.assertEqual(self.jobs.settings(self.gid)["quality"], "fast")
 
     def test_unknown_keys_are_not_saved(self):
         s = self.jobs.save_settings(self.gid, {"timbre_level": "deep", "ft_level": "light"})
@@ -149,6 +153,7 @@ class PlanCase(ProjectCase):
         self.jobs.cancel_flag = threading.Event()
         self.jobs._translator = None
         self.jobs.state = {self.gid: {"task": "generate", "message": "", "done": 0, "total": 0, "error": None, "queued": []}}
+        self.jobs.save_settings(self.gid, {"episodic_mode": "clone", "timbre_level": "normal", "quality": "normal"})  # сценарии быстрого пути: клон с записи, 3 варианта
         self.jobs.character_profile = lambda p, char, **kw: {"audio": str(self.profile), "text": "Hello there", "seconds": 3.0}
         self.jobs.profile_f0 = lambda p, char: 120.0
         self.jobs._style_cache = {}
@@ -229,7 +234,8 @@ class VoicePlanTests(PlanCase):
 class GenerateTests(PlanCase):
     def test_generate_converts_timbre_only_for_main(self):
         self.accept_hero()
-        self.jobs._do_generate(self.gid)
+        with patch.object(self.jobs, "_target_pitch", return_value=120.0), patch("ruvoice.audio.f0_median", return_value=150.0):
+            self.jobs._do_generate(self.gid)
         hero = self.p.line("h00")
         self.assertEqual(hero["status"], "generated")
         self.assertTrue((self.p.dir / hero["gen"]).is_file())
@@ -239,7 +245,7 @@ class GenerateTests(PlanCase):
         self.assertEqual(self.convert.call_count, 20 * 3)  # 20 реплик героя × 3 варианта; прохожий без тембра
         params = self.convert.call_args.args[3]
         self.assertEqual((params["pitch"], params["auto_pitch"], params["index_rate"], params["protect"]),
-                         (round(12 * math.log2(120 / 110)), False, 0.0, 0.5))
+                         (round(12 * math.log2(120 / 150)), False, 0.0, 0.5))
         hero_calls = [c for c in self.synth_calls if c["refs"][0].get("donor")]
         npc_calls = [c for c in self.synth_calls if c["refs"][0].get("language") == "en"]
         self.assertEqual((len(hero_calls), len(npc_calls)), (20, 2))

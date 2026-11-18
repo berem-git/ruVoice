@@ -7,10 +7,10 @@ _pipe = None
 _lock = threading.Lock()
 
 
-def _input(path: str) -> dict:
+def _input(source) -> dict:
     # Supplying samples makes the portable app independent of ffmpeg in the system PATH.
     from . import audio
-    w, sr = audio.read(path)
+    w, sr = source if isinstance(source, tuple) else audio.read(source)
     return {"raw": audio.resample(w, sr, 16000), "sampling_rate": 16000}
 
 
@@ -27,15 +27,14 @@ def _load():
     return _pipe
 
 
-def transcribe(paths: list[str], language: str | None = "english", batch_size: int = 8) -> list[str]:
+def transcribe(paths: list, language: str | None = "english", batch_size: int = 8) -> list[str]:
     """Короткие записи (до 30 с) идут пачкой; длинные Whisper режет на куски и обрабатывает по одной —
     в одной пачке их смешивать нельзя (ошибка «elements of the batch contain different keys»)."""
     import soundfile as sf
-    paths = [str(p) for p in paths]
     short, long_ = [], []
     for i, p in enumerate(paths):
         try:
-            d = sf.info(p).duration
+            d = len(p[0]) / p[1] if isinstance(p, tuple) else sf.info(p).duration
         except Exception:
             d = 0.0
         (long_ if d > 29.5 else short).append(i)

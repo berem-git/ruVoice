@@ -56,18 +56,17 @@ class StopDeleteTests(PlanCase):
         self.jobs.q = queue.Queue()  # cancel() чистит очередь
 
     def test_stop_delete_reverts_only_lines_of_this_run(self):
-        old = self.p.line("h00")
         self.p.gen_dir.mkdir(parents=True, exist_ok=True)
         audio.write(self.p.gen_dir / "h00.wav", tone(1.0), 16000)
         self.p.update_line("h00", gen="gen/h00.wav", status="generated")
         self.jobs._do_generate(self.gid, ids=["h01", "h02"])
-        self.assertEqual(sorted(self.jobs.state[self.gid]["produced"]), ["h01", "h02"])
+        self.assertEqual(sorted(self.jobs.state[self.gid]["produced"]), ["h00", "h01", "h02"])
         self.jobs.current = self.gid
         self.jobs.stop_delete(self.gid)
         self.assertTrue(self.jobs.cancel_flag.is_set())
         self.assertTrue(self.jobs.state[self.gid]["purge"])
         n = self.jobs._purge_run(self.gid)
-        self.assertEqual(n, 2)
+        self.assertEqual(n, 3)
         for lid in ("h01", "h02"):
             l = self.p.line(lid)
             self.assertEqual((l["status"], l["gen"]), ("translated", None))
@@ -75,6 +74,7 @@ class StopDeleteTests(PlanCase):
         kept = self.p.line("h00")
         self.assertEqual((kept["status"], kept["gen"]), ("generated", "gen/h00.wav"))
         self.assertTrue((self.p.gen_dir / "h00.wav").exists())
+        self.assertFalse((self.p.gen_dir / "h00-updated.wav").exists())
         self.assertIn("удалена", self.jobs.state[self.gid]["message"])
         self.assertEqual(self.jobs.state[self.gid]["produced"], [])
 

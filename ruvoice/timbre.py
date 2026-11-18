@@ -253,7 +253,7 @@ def calibrate(jobs, gid: str, char: str, holdout: list[dict]) -> dict:
     name = next((c["name"] for c in p.characters() if c["id"] == char), char)
     voices = p.get("voices") or {}
     row = dict(voices.get(char) or {})
-    res = {"accept": False, "reason": "", "sim_base": None, "sim_rvc": None, "pron_base": None, "pron_rvc": None,
+    res = {"accept": False, "reason": "", "sim_base": None, "sim_rvc": None, "pron_base": None, "pron_rvc": None, "dry": True,
            "f0_rvc": None, "f0_shift": None}
     if not holdout:
         res["reason"] = "нет контрольных реплик с русским текстом"
@@ -267,9 +267,10 @@ def calibrate(jobs, gid: str, char: str, holdout: list[dict]) -> dict:
     candidate = {"method": "rvc", "pth": str(p.dir / row["pth"]),
                  "index": str(p.dir / row["index"]) if row.get("index") and (p.dir / row["index"]).exists() else None}
     plan = jobs.voice_plan(p, char, rvc=candidate)  # план «как будто модель принята»: донор + тембр
+    res["donor"] = (plan.get("donor") or {}).get("id")
     files = {}
     for tag, use in (("base", False), ("rvc", True)):
-        files[tag], sim = jobs._render(gid, p, char, holdout, calib / tag, plan=plan, timbre=use)
+        files[tag], sim = jobs._render(gid, p, char, holdout, calib / tag, plan=plan, timbre=use, dry=True)
         res[f"sim_{tag}"] = None if sim is None else round(float(sim), 3)
     if pron.ready():
         for tag in ("base", "rvc"):

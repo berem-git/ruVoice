@@ -154,3 +154,51 @@ def set_manual(jobs, p, char: str, donor_id: str) -> dict:
     table[char] = entry
     p.set("donors", table)
     return entry
+
+
+def audition(jobs, p, char: str, lines: list[dict]):
+    """Закрепить русский образец после проверки речи и тембра на нескольких репликах."""
+    from . import audio, judge, pron, tts
+
+    current = assigned(jobs, p, char)
+    if current.get("manual") or current.get("audition") == 1 or len(lines) < 2:
+        return
+    if not pron.ready() or not judge.ecapa_ready():
+        return
+    target = jobs.profile_f0(p, char)
+    if not target:
+        return
+    bank = load()
+    first = by_id(bank, current["id"])
+    alternatives = [d for d in bank if d["id"] != current["id"] and d.get("gender") == first.get("gender") and d.get("f0")]
+    alternatives.sort(key=lambda d: _semitones(target, d["f0"]))
+    texts = [line["ru"] for line in lines]
+    limits = [max(3, float(line["duration"] or 2) * 2) + len(text) * .03 for line, text in zip(lines, texts)]
+    best, best_score = first, -float("inf")
+    for donor in [first, *alternatives[:4]]:
+        if jobs._checkpoint():
+            return
+        ref = reference(donor, "calm")
+        recordings = tts.synthesize("ru", texts, [ref] * len(texts), limits,
+                                    {"temperature": .68, "subtalker_dosample": False}, seed=902)
+        embeddings = judge.ecapa_embed([ref["audio"], *recordings])
+        cer = [result["cer"] for result in pron.check(recordings, texts)]
+        f0s = [v for v in (audio.f0_median(*w) for w in recordings) if v]
+        pitches = [_semitones(target, v) for v in f0s]
+        pairs = [float(a @ b) for i, a in enumerate(embeddings[1:]) for b in embeddings[i + 2:]]
+        score = min(pairs) + .35 * float(np.mean(embeddings[1:] @ embeddings[0]))
+        score -= 2 * float(np.mean(cer)) + .5 * max(cer)
+        score -= .06 * float(np.mean(pitches)) if pitches else .4
+        if len(f0s) > 1:
+            score -= .06 * _semitones(max(f0s), min(f0s))
+        if score > best_score:
+            best, best_score = donor, score
+        if (donor is first and len(f0s) == len(texts) and max(pitches) <= 3
+                and min(pairs) >= .50 and float(np.mean(cer)) <= .05 and max(cer) <= .12):
+            break
+    if best_score == -float("inf"):
+        return
+    table = dict(p.get("donors") or {})
+    table[char] = {**current, "id": best["id"], "pitch": pitch_shift(target, best["f0"]), "audition": 1}
+    p.set("donors", table)
+    print(f"Пробы русского образца «{char}»: {first['id']} → {best['id']}", flush=True)

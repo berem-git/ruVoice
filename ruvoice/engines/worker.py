@@ -143,8 +143,7 @@ class RVC:
             self.vc = VoiceConverter()
         p = req.get("params") or {}
         # index_rate 0 — не подмешивать фрагменты английских записей (они дают акцент);
-        # protect 0.5 — беречь глухие согласные и дыхание от искажений; высота — постоянный сдвиг
-        # персонажа (donors.pitch_shift), без автоподгонки каждой реплики
+        # Сдвиг высоты рассчитан в студии. Автоподгонка Applio здесь выключена.
         self.vc.convert_audio(audio_input_path=req["source"], audio_output_path=req["out"], model_path=req["pth"],
                               index_path=req.get("index") or "", pitch=int(p.get("pitch", 0)), f0_method="rmvpe",
                               index_rate=float(p.get("index_rate", 0.0)), volume_envelope=1.0,

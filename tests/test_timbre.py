@@ -53,6 +53,7 @@ class TimbreCase(unittest.TestCase):
         self.jobs.cancel_flag = threading.Event()
         self.jobs.state = {self.gid: {"task": "train_voice", "message": "", "done": 0, "total": 0, "error": None, "queued": []}}
         self.jobs._most_typical = lambda p, lines: lines
+        self.jobs.save_settings(self.gid, {"timbre_level": "normal"})  # тесты уровней считают от «обычно»
 
     def tearDown(self):
         self.p.close()
@@ -88,7 +89,8 @@ class CalibrateTests(TimbreCase):
         self.pron = {"base": 0.05, "rvc": 0.06}
         self.render_calls = []
 
-        def render(gid, p, char, lines, out_dir, seed=None, plan=None, timbre=True):
+        def render(gid, p, char, lines, out_dir, seed=None, plan=None, timbre=True, dry=False):
+            self.assertTrue(dry)
             tag = "rvc" if timbre else "base"
             self.render_calls.append(tag)
             files = []

@@ -385,6 +385,7 @@ def judge_line(gen_path: str, ru_text: str, orig_path: str, profile: np.ndarray 
                 reasons.append(f"высота голоса не та: {voice_type(f0)} ({f0:.0f} Гц) вместо {voice_type(profile_f0)} "
                                f"({profile_f0:.0f} Гц)")
                 score -= 35
+                problems.append("pitch")
             elif abs(semis) > 3:
                 reasons.append(f"голос выше/ниже обычного для персонажа на {abs(semis):.0f} полутона")
                 score -= 12
@@ -453,7 +454,7 @@ def judge_line(gen_path: str, ru_text: str, orig_path: str, profile: np.ndarray 
 
     result["codes"] = problems
     result["score"] = int(max(0, min(100, score)))
-    result["verdict"] = "ok" if result["score"] >= 70 and not {"drift", "accent"}.intersection(problems) else "rework"
+    result["verdict"] = "ok" if result["score"] >= 70 and not {"drift", "accent", "pitch"}.intersection(problems) else "rework"
     result["reasons"] = reasons
     result["problems"] = _problems(result)
     return result
@@ -487,7 +488,7 @@ def _problems(r: dict) -> list[dict]:
         out.append({"code": "short", "action": ACTIONS["short"]})
     if r.get("voice_sim") is not None and r["voice_sim"] < 0.78:
         out.append({"code": "voice", "action": ACTIONS["voice"]})
-    if r.get("f0_shift") is not None and abs(r["f0_shift"]) > 5:
+    if "pitch" not in (r.get("codes") or []) and r.get("f0_shift") is not None and abs(r["f0_shift"]) > 5:
         out.append({"code": "pitch", "action": ACTIONS["pitch"]})
     if any("эмоция не совпала" in x for x in r.get("reasons", [])):
         out.append({"code": "emotion", "action": ACTIONS["emotion"]})

@@ -166,7 +166,8 @@ def synthesize(engine: str, texts: list[str], refs: list[dict], max_seconds: lis
                 outputs.append(audio.read(dst))
         return outputs
     if engine == "ru":  # refs[i] = {"audio": образец голоса, "text": его расшифровка, "language": "ru"|"en"}
-        texts = [accent.mark(t, "acute") for t in texts]
+        stress = "custom" if params.get("relax_stress") else "acute"
+        texts = [accent.mark(t, stress) for t in texts]
         return _ru_generate(texts, refs, max_seconds, params)
     if engine == "custom":
         texts = [accent.mark(t, "custom") for t in texts]

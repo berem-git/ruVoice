@@ -2,8 +2,8 @@
 
 # RuVoice — русская озвучка для игр
 
-**Версия 1.1.3:** [скачать установщик для Windows x64](https://github.com/berem-git/ruVoice/releases/tag/v1.1.3).
-Скачайте `RuVoice-1.1.3-Setup.exe`: он загрузит архив, проверит и распакует
+**Версия 1.1.4:** [скачать установщик для Windows x64](https://github.com/berem-git/ruVoice/releases/tag/v1.1.4).
+Скачайте `RuVoice-1.1.4-Setup.exe`: он загрузит архив, проверит и распакует
 программу, затем установит CUDA из официального репозитория PyTorch. Python входит в ZIP,
 модели скачиваются из интерфейса. Подробнее: [RELEASE_NOTES.md](RELEASE_NOTES.md).
 

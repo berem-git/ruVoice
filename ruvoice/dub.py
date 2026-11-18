@@ -32,8 +32,8 @@ from .project import Project
 DEFAULT_SETTINGS = {
     "speech_source": "auto",     # источник русской речи (ступень 1): auto | ru | custom | silero | omnivoice
     "clone_engine": "auto",      # быстрый путь эпизодических: клонирование с английской записи: auto | ru | voxcpm | omnivoice
-    "episodic_mode": "clone",    # эпизодические персонажи: clone — клонировать с записи; donor — донорский русский голос
-    "timbre_level": "normal",    # обучение тембра главных персонажей: off / fast / normal / deep (timbre.TIMBRE_LEVELS)
+    "episodic_mode": "donor",    # эпизодические персонажи: donor — русский донор без акцента (clone — с английской записи, акцент)
+    "timbre_level": "deep",      # обучение тембра главных персонажей: всегда максимум (500 эпох); в интерфейсе не выбирается
     "timbre_min_seconds": 120,   # главный персонаж — от стольких секунд речи (и от 12 реплик)
     "preserve_performance": True,
     "effects_mode": "auto",      # auto — эхо и фон по хвосту каждой реплики (acoustics); engine/dry — не накладывать; baked — ниже порог
@@ -41,7 +41,7 @@ DEFAULT_SETTINGS = {
     "translate_missing": False,  # реплики без русских субтитров: False — оставить оригинальный голос, True — перевести
     "glossary": "",
     "translator": "auto",        # auto | qwen3-14b | qwen3-8b | qwen3-4b
-    "quality": "normal",         # fast — 1 вариант; normal — 3; thorough — 5 (контролёр выбирает лучший)
+    "quality": "thorough",       # всегда максимум: 5 вариантов реплики, контролёр выбирает ближайший к голосу персонажа
     "director": True,            # режиссёр (языковая модель) готовит подачу каждой реплики по оригиналу
     "judge": True,               # проверять реплики контролёром
     "autofix": True,             # после контролёра переозвучить проблемные реплики с большим числом вариантов
@@ -50,7 +50,8 @@ DEFAULT_SETTINGS = {
     "after_install": "minimum",  # после установки: minimum — удалить оригиналы, пробы и стенд (их можно вернуть); keep — оставить всё
     "event_gap": 0.3,            # пауза (с) из оригинала после смеха/вздоха перед русской речью
 }
-SETTINGS_VERSION = 3             # 3: конвейер v2 (донор + тембр), старые настройки дообучения убраны
+SETTINGS_VERSION = 4
+REFERENCE_POLICY = 3
 DEFAULT_SOURCE = "ru"            # умолчания «auto» — уточняются по стенду движков (спецификация, раздел 8)
 DEFAULT_CLONE = "ru"
 CANDIDATES = {"fast": 1, "normal": 3, "thorough": 5}
@@ -187,27 +188,15 @@ class DubJobs:
 
     def settings(self, gid: str) -> dict:
         stored = dict(self.project(gid).get("settings") or {})
-        if stored.get("_v", 0) < SETTINGS_VERSION:  # проект старой версии: убрать настройки, чьего смысла больше нет
-            drop = {"translate_missing"} if stored.get("_v", 0) < 2 else set()
+        version = stored.get("_v", 0)
+        if version < SETTINGS_VERSION:
+            drop = {"translate_missing"} if version < 2 else set()
             stored = {k: v for k, v in stored.items() if k in DEFAULT_SETTINGS and k not in drop}
+            if stored.get("episodic_mode") == "clone":
+                stored["episodic_mode"] = "donor"
             stored["_v"] = SETTINGS_VERSION
             self.project(gid).set("settings", stored)
-        base = dict(DEFAULT_SETTINGS)
-        if "quality" not in stored and self._big_gpu():
-            base["quality"] = "thorough"  # 24 ГБ и больше: 5 вариантов реплики помещаются одной пачкой
-        return {**base, **{k: v for k, v in stored.items() if k in DEFAULT_SETTINGS}}
-
-    _big: bool | None = None
-
-    def _big_gpu(self) -> bool:
-        """Видеокарта от 24 ГБ (один раз за запуск: accel.info() опрашивает драйвер и импортирует torch)."""
-        if DubJobs._big is None:
-            from . import accel, models
-            try:
-                DubJobs._big = (accel.info().get("vram_gb") or 0) >= models.TIERS["ultra"]["vram"]
-            except Exception:
-                DubJobs._big = False
-        return DubJobs._big
+        return {**DEFAULT_SETTINGS, **{k: v for k, v in stored.items() if k in DEFAULT_SETTINGS}}
 
     def save_settings(self, gid: str, values: dict):
         s = self.settings(gid)
@@ -276,8 +265,12 @@ class DubJobs:
                     (p.dir / l["gen"]).unlink(missing_ok=True)
                 except OSError as e:
                     print(f"удаление {l['gen']}: {e}")
-            status = "translated" if l["status"] in ("generated", "approved", "rejected", "error") else l["status"]
-            p.update_line(l["id"], gen=None, gen_duration=None, status=status, error=None)
+            previous = (st.get("_previous_audio") or {}).get(l["id"])
+            if previous:
+                p.update_line(l["id"], **previous)
+            else:
+                status = "translated" if l["status"] in ("generated", "approved", "rejected", "error") else l["status"]
+                p.update_line(l["id"], gen=None, gen_duration=None, status=status, error=None)
             n += 1
         st["message"] = f"Остановлено, озвучка этого запуска удалена ({n} реплик)"
         return n
@@ -311,7 +304,8 @@ class DubJobs:
     def status(self, gid: str) -> dict:
         st = self.state.get(gid) or {"task": None, "message": "", "done": 0, "total": 0, "error": None,
                                      "queued": []}
-        return {**st, "running": self.current == gid, "paused": bool(st.get("paused")) and self.current == gid}
+        return {**{k: v for k, v in st.items() if not k.startswith("_")},
+                "running": self.current == gid, "paused": bool(st.get("paused")) and self.current == gid}
 
     # --- поток ---
 
@@ -323,6 +317,7 @@ class DubJobs:
                 if task in st["queued"]:
                     st["queued"].remove(task)
                 st["produced"], st["purge"], st["paused"] = [], False, False
+                st["_previous_audio"] = {}
                 self.cancel_flag.clear()
                 self._pause_flag().clear()
                 self.current, st["task"], st["done"], st["total"] = gid, task, 0, 0
@@ -348,6 +343,14 @@ class DubJobs:
                     except Exception as e:
                         print(f"удаление озвучки запуска: {e}")
                         traceback.print_exc()
+                for lid, old in st.pop("_previous_audio", {}).items():
+                    p = self.project(gid)
+                    current = p.line(lid)
+                    if current and (not current["gen"] or Path(current["gen"]) != Path(old["gen"])):
+                        try:
+                            (p.dir / old["gen"]).unlink(missing_ok=True)
+                        except OSError as e:
+                            print(f"Удаление прежней озвучки {old['gen']}: {e}")
                 st.pop("_keep_message", None)
                 st["task"] = None
                 self.current = None
@@ -567,6 +570,33 @@ class DubJobs:
         if not prof:
             raise RuntimeError("Не удалось собрать образец голоса персонажа")
         return {"audio": prof["audio"], "text": prof["text"] if src == "omnivoice" else None, "language": "en", "speaker": None}
+
+    @staticmethod
+    def _voice_key(plan: dict, ref: dict) -> list:
+        """Состав голоса, который можно сравнить после перезапуска и переобучения."""
+        model = (plan.get("rvc") or {}).get("pth")
+        return [REFERENCE_POLICY, plan["source"], ref.get("donor"), ref.get("speaker"), plan["pitch"],
+                Path(model).stat().st_mtime_ns if model else None]
+
+    def _apply_voice(self, p: Project, line: dict, plan: dict, wav, sr: int, note):
+        from . import tts
+        if plan["timbre"]:
+            target = self._target_pitch(p, line)
+            generated = audio.f0_median(wav, sr) if target else 0
+            shift = plan["pitch"]
+            if generated:
+                shift = round(float(np.clip(12 * np.log2(target / generated), -12, 12)))
+            wav, sr = tts.convert_timbre(wav, sr, plan["rvc"], {"pitch": shift, "auto_pitch": False,
+                                                               "index_rate": 0.0, "protect": 0.5})
+        return self._apply_note(wav, sr, note)
+
+    def _target_pitch(self, p: Project, line: dict) -> float:
+        baseline = self.profile_f0(p, line["char"])
+        if not baseline:
+            return 0
+        original, _ = self._orig_stats(p, line)
+        # Сохраняем умеренный подъём голоса в оригинале, а не октавные скачки от шума и криков.
+        return float(np.clip(original, baseline * 2 ** (-2 / 12), baseline * 2 ** (2 / 12))) if original else baseline
 
     def _silero_speaker_for(self, p: Project, char: str) -> str:
         """Диктор Silero под персонажа: по полу (высота голоса) и отпечатку."""
@@ -1064,11 +1094,11 @@ class DubJobs:
             plan["steps"].append("сохранить тембр и обычную высоту персонажа; подачу менять паузами и пунктуацией")
         if "accent" in codes:
             from . import pron
-            plan.update(temperature=min(plan["temperature"] or 0.6, 0.6), extra=5, director=True)
+            plan.update(temperature=min(plan["temperature"] or 0.6, 0.6), extra=5, director=True, relax_stress=True)
             words = pron.describe({"words": j.get("pron_words")})
             plan["steps"].append("чистое русское произношение" + (f" ({words})" if words else "")
                                  + ": меньше случайности, выбор варианта по чистоте произношения")
-        if "flat" in codes:
+        if "flat" in codes and not {"accent", "drift", "pitch"}.intersection(codes):
             plan.update(temperature=0.9, extra=max(plan["extra"], 4), director=True)
             plan["steps"].append("сыграть живее, как в оригинале")
         if "over" in codes:
@@ -1088,7 +1118,7 @@ class DubJobs:
 
     def _do_generate(self, gid: str, ids: list[str] | None = None, fix: bool = False):
         """Озвучить реплики (ids — только эти). fix — переозвучка проблемных по плану контролёра (info["fix"]):
-        больше вариантов, другие параметры, старая запись участвует в выборе наравне с новыми.
+        больше вариантов, другие параметры. Прежнюю запись заменяем только при улучшении оценки.
 
         Конвейер v2: у каждого персонажа свой план (voice_plan) — русская речь донорским голосом и обученный
         тембр у главных, клонирование с записи у эпизодических. Зёрна детерминированы (line_seed): повторная
@@ -1102,7 +1132,7 @@ class DubJobs:
         if ids:
             lines = [l for l in p.lines(ids=ids) if l["ru"] and l["status"] != "skipped"]
         else:
-            lines = self._in_selection(p, [l for l in p.lines(status="translated") if l["ru"]])
+            lines = self._in_selection(p, [l for l in p.lines(status="translated,generated,approved,error") if l["ru"]])
         if not lines:
             report("Нет реплик для озвучки: сначала нужен русский текст")
             return
@@ -1112,30 +1142,51 @@ class DubJobs:
         use_judge = self._judge_ready(gid)
         info = accel.info()
         inline_asr = use_judge and info["device"] == "cuda" and (info["vram_gb"] or 0) >= 10
+        gpu_memory = info["vram_gb"] or 0
+        candidate_batch = 2 if info["device"] == "cuda" and gpu_memory < 10 else (5 if gpu_memory >= 24 else 3)
         use_ecapa = judge.ecapa_ready()
         use_pron = use_judge and inline_asr and pron.ready()
         take = self._take(gid)
-        if not fix and self._director_ready(gid):
-            self._do_direct(gid, lines)
-            lines = p.lines(ids=[l["id"] for l in lines])
-            if self._checkpoint():
-                return
-
         report("Планы голосов персонажей…")
-        chars = {l["char"] for l in lines}
+        chars = {l["char"]: l for l in lines}
         plans = {}
-        for c in chars:  # сбой плана одного персонажа (нет донора, образца…) не останавливает остальных
+        refs, voice_keys = {}, {}
+        for c, line in chars.items():
             try:
-                plans[c] = self.voice_plan(p, c)
+                if self.cancel_flag.is_set():
+                    return
+                plan = (self._checked_voice_plan(gid, p, c) if use_judge and not fix
+                        else self.voice_plan(p, c))
+                ref = self.line_ref(p, line, plan)
+                voice_keys[c] = self._voice_key(plan, ref)
+                plans[c], refs[c] = plan, ref
             except Exception as e:
                 print(f"план голоса «{c}»: {e}")
                 for l in lines:
                     if l["char"] == c:
-                        p.update_line(l["id"], status="error", error=f"План голоса: {str(e)[:250]}")
+                        p.update_line(l["id"], status=l["status"] if l["gen"] else "error", error=f"План голоса: {str(e)[:250]}")
         lines = [l for l in lines if l["char"] in plans]
+        if not ids:
+            lines = [l for l in lines if l["status"] in ("translated", "error") or not l["gen"]
+                     or (l["info"] or {}).get("voice_key") != voice_keys[l["char"]]]
         if not lines:
             report("Ни для одного персонажа не удалось составить план голоса")
             return
+        if not fix:
+            included = {l["id"] for l in lines}
+            for old in p.lines(status="generated,approved"):
+                char = old["char"]
+                if (old["id"] not in included and old["ru"] and char in plans and
+                        (old["info"] or {}).get("voice_key") != voice_keys[char]):
+                    lines.append(old)
+            if self._director_ready(gid):
+                tts.unload()
+                judge.unload()
+                pron.unload()
+                self._do_direct(gid, lines)
+                lines = p.lines(ids=[l["id"] for l in lines])
+                if self._checkpoint():
+                    return
         profiles = {}
         if use_judge:
             for c in chars:
@@ -1165,7 +1216,7 @@ class DubJobs:
                 eta = f", осталось ~{int(left // 60)} мин" if left >= 60 else f", осталось ~{int(left)} с"
             report(f"{'Доработка' if fix else 'Озвучка'} (вариантов: {base_cand}{'+' if fix else ''}): {i}/{len(lines)}{eta}", i, len(lines))
             candidates: list[list[tuple[np.ndarray, int]]] = [[] for _ in chunk]
-            plans_fix, texts, refs_used = [], [], []
+            plans_fix, texts = [], []
             t_line = time.time()
             try:
                 for j, l in enumerate(chunk):
@@ -1180,8 +1231,7 @@ class DubJobs:
                     plans_fix.append(fixplan)
                     texts.append(text)
                     maxlen = max((l["duration"] or 2) * 2.0, 3.0) + len(l["ru"]) * 0.03
-                    ref = self.line_ref(p, l, plan)
-                    refs_used.append(ref)
+                    ref = refs[l["char"]]
                     params = {"speaker": ref.get("speaker"), **self._style_params(p, l, src)}
                     if src == "ru":
                         params["temperature"] = 0.75 + 0.05 * min(3, int(deliv.get("intensity") or 0))
@@ -1197,51 +1247,48 @@ class DubJobs:
                     n_cand = base_cand + ((fixplan or {}).get("extra", FIX_EXTRA) if fix else 0)
                     rnd = int((fixplan or {}).get("round") or 0) if fix else 0
                     if src in ("ru", "custom") and n_cand > 1:  # все варианты одной пачкой — быстрее по одному; зерно общее
-                        candidates[j] += tts.synthesize(src, [text] * n_cand, [ref] * n_cand, [maxlen] * n_cand, params,
-                                                        seed=line_seed(l["id"], take, 0) + 7919 * rnd)
+                        seed = line_seed(l["id"], take, 0) + 7919 * rnd
+                        relaxed = n_cand // 3 if src == "ru" and (fixplan or {}).get("relax_stress") else 0
+                        normal = n_cand - relaxed
+                        for count, options, offset in ((normal, params, 0),
+                                                        (relaxed, {**params, "relax_stress": True}, normal)):
+                            for start in range(0, count, candidate_batch):
+                                size = min(candidate_batch, count - start)
+                                candidates[j] += tts.synthesize(src, [text] * size, [ref] * size, [maxlen] * size, options,
+                                                                seed=seed + offset + start)
                     else:
                         for k in range(n_cand):
                             candidates[j] += tts.synthesize(src, [text], [ref], [maxlen], params,
                                                             seed=line_seed(l["id"], take, k) + 7919 * rnd)
             except Exception as e:
                 for l in chunk:
-                    p.update_line(l["id"], status="error", error=str(e)[:300])
+                    p.update_line(l["id"], status=l["status"] if l["gen"] else "error", error=str(e)[:300])
                 traceback.print_exc()
                 continue
-            for l, cands, fixplan, text, ref in zip(chunk, candidates, plans_fix, texts, refs_used):
+            for l, cands, fixplan, text in zip(chunk, candidates, plans_fix, texts):
                 plan = plans[l["char"]]
+                ref = refs[l["char"]]
+                voice_key = voice_keys[l["char"]]
                 orig, orig_sr = audio.read(p.dir / l["orig"])
                 raw = []  # (wav, sr) до подгонки — по ним меряем голос и акцент (без вклеенного оригинала)
                 scored = []  # (fitted, finfo)
                 speedup = (fixplan or {}).get("max_speedup") or s["max_speedup"]
                 timbre_error = None
                 for wav, sr in cands:
-                    wav, sr = self._apply_note(wav, sr, notes.get(l["char"]))
-                    if plan["timbre"]:
-                        try:
-                            wav, sr = tts.convert_timbre(wav, sr, plan["rvc"], {"pitch": plan["pitch"], "auto_pitch": False,
-                                                                                 "index_rate": 0.0, "protect": 0.5})
-                        except Exception as e:  # донорский голос без тембра за персонажа не выдаём — вариант выбывает
-                            timbre_error = str(e)[:200]
-                            print(f"перенос тембра ({l['id']}): {e}")
-                            continue
+                    try:
+                        wav, sr = self._apply_voice(p, l, plan, wav, sr, notes.get(l["char"]))
+                    except Exception as e:
+                        timbre_error = str(e)[:200]
+                        print(f"перенос тембра ({l['id']}): {e}")
+                        continue
                     fitted, finfo = self._fit_line(p, l, wav, sr, orig, orig_sr, speedup)
                     raw.append((wav, sr))
                     scored.append((fitted, finfo))
                 if not scored:
-                    p.update_line(l["id"], status="error", error=f"Перенос тембра не удался: {timbre_error or 'нет вариантов'}")
+                    p.update_line(l["id"], status=l["status"] if l["gen"] else "error",
+                                  error=f"Перенос тембра не удался: {timbre_error or 'нет вариантов'}")
                     continue
                 previous_info = l["info"] or {}
-                previous_plan = previous_info.get("plan") or {}
-                same_voice = (previous_info.get("reference_policy") == 2
-                              and previous_plan.get("source") == plan["source"]
-                              and previous_plan.get("donor") == (plan["donor"] or {}).get("id")
-                              and previous_plan.get("timbre") == plan["timbre"])
-                if fix and same_voice and l["gen"] and (p.dir / l["gen"]).exists():
-                    old, osr = audio.read(p.dir / l["gen"])
-                    old = audio.resample(old, osr, orig_sr)
-                    raw.append((old, orig_sr))
-                    scored.append((old, dict((l["info"] or {}).get("fit") or {"ratio": 1.0})))
                 best, best_info, best_judge, best_k = None, None, None, 0
                 tmps = []
                 for ci, (fitted, finfo) in enumerate(scored):
@@ -1249,22 +1296,23 @@ class DubJobs:
                     audio.write(tmp, fitted, orig_sr)
                     tmps.append(tmp)
                 judging = use_judge and (len(scored) > 1 or inline_asr)
-                heard_all = asr.transcribe([str(t) for t in tmps], language="russian") if judging and inline_asr else [None] * len(tmps)
+                heard_all = asr.transcribe(raw, language="russian") if judging and inline_asr else [None] * len(tmps)
                 prons = pron.check(raw, [l["ru"]] * len(raw)) if judging and use_pron else [None] * len(raw)
                 centroid, floor = self._ru_voice(p, l["char"], plan["timbre"], reference=ref) if use_ecapa else (None, None)
                 embs = judge.ecapa_embed(raw) if use_ecapa and centroid is not None else None
                 cons = [float(e @ centroid) for e in embs] if embs is not None else [None] * len(raw)
                 orig_emo, orig_ev = self._orig_judge(p, l) if judging else (None, None)
                 ostats = self._orig_stats(p, l) if judging else None
+                gen_stats = [audio.f0_stats(*w) for w in raw] if judging else [None] * len(raw)
+                target_pitch = self._target_pitch(p, l) if plan["timbre"] else self.profile_f0(p, l["char"])
                 for k, ((fitted, finfo), tmp, heard) in enumerate(zip(scored, tmps, heard_all)):
                     jr = None
                     if judging:
-                        gstats = audio.f0_stats(*raw[k])
                         jr = judge.judge_line(str(tmp), l["ru"], str(p.dir / l["orig"]), profiles.get(l["char"]),
                                               heard=heard, orig_emotion=orig_emo, orig_events=orig_ev,
-                                              full=self._judge_ready_quiet(), profile_f0=self.profile_f0(p, l["char"]),
+                                              full=self._judge_ready_quiet(), profile_f0=target_pitch,
                                               consistency=cons[k], cons_floor=floor, pron=prons[k],
-                                              gen_stats=gstats, orig_stats=ostats, events_kept=finfo.get("kept"))
+                                              gen_stats=gen_stats[k], orig_stats=ostats, events_kept=finfo.get("kept"))
                         jr["problems"] = judge._problems(jr)
                     if cons[k] is not None and floor is not None and cons[k] < floor:
                         jr = jr or {"score": 0, "reasons": [], "codes": []}
@@ -1277,23 +1325,38 @@ class DubJobs:
                              - (60 * prons[k]["cer"] if prons[k] else 0))
                     if cons[k] is not None and floor is not None and cons[k] < floor:
                         score -= 1000  # хороший текст не перевешивает чужой голос
-                    if jr and "accent" in jr.get("codes", []):
+                    if jr and {"accent", "pitch"}.intersection(jr.get("codes", [])):
                         score -= 1000
                     if best is None or score > best_score:
                         best, best_info, best_judge, best_k, best_score = fitted, finfo, jr or {"score": 0}, k, score
                     tmp.unlink(missing_ok=True)
+                previous_rank = previous_info.get("candidate_rank")
+                if (fix and previous_info.get("voice_key") == voice_key and previous_rank is not None
+                        and best_score <= previous_rank and l["gen"] and (p.dir / l["gen"]).is_file()):
+                    continue
                 if embs is not None and cons[best_k] is not None and best_judge.get("verdict") != "rework":
                     self._ru_voice_note(p, l["char"], cons[best_k], plan["timbre"])
                 if i < 12 or i % 200 == 0:
                     print(f"озвучка: реплика {i} ({l['char']}, {len(scored)} вар.) за {time.time() - t_line:.1f} с")
                 t_line = time.time()
                 out = p.gen_dir / Path(l["orig"]).name
-                audio.write(out, best, orig_sr)
+                st = self.state[gid]
+                replaced = st.setdefault("_previous_audio", {})
+                if l["gen"]:
+                    if l["id"] not in st.get("produced", []):
+                        replaced[l["id"]] = {k: l[k] for k in ("gen", "gen_duration", "status", "error", "info")}
+                    if l["id"] in replaced and Path(replaced[l["id"]]["gen"]) == out.relative_to(p.dir):
+                        out = out.with_name(out.stem + "-updated" + out.suffix)
+                temp = out.with_suffix(".tmp.wav")
+                audio.write(temp, best, orig_sr)
+                os.replace(temp, out)
                 ratio = best_info.get("ratio", 1.0)
                 old_info = l["info"] or {}
                 new_info = {"fit": best_info, "flag": "long" if ratio > 1.35 else ("short" if ratio < 0.45 else None),
                             "engine": plan["source"], "timbre": plan["timbre"], "candidates": len(scored),
-                            "reference_policy": 2,
+                            "reference_policy": REFERENCE_POLICY, "voice_key": voice_key, "candidate_rank": best_score,
+                            "dry_check": {"heard": heard_all[best_k], "pron": prons[best_k], "f0": gen_stats[best_k],
+                                          "target_pitch": target_pitch},
                             "plan": {"tier": plan["tier"], "source": plan["source"], "donor": (plan["donor"] or {}).get("id"),
                                      "style": ref.get("style"), "timbre": plan["timbre"]},
                             "consistency": None if cons[best_k] is None else round(cons[best_k], 3), "consistency_floor": floor,
@@ -1309,7 +1372,7 @@ class DubJobs:
                     new_info["judge"] = best_judge
                 p.update_line(l["id"], gen=str(out.relative_to(p.dir)), gen_duration=round(len(best) / orig_sr, 3),
                               status="generated", info=new_info, error=None)
-                self.state[gid].setdefault("produced", []).append(l["id"])  # для «остановить и удалить озвучку»
+                st.setdefault("produced", []).append(l["id"])
             power.pause(time.time() - batch_started)
             if ids is None:  # персонаж озвучен целиком — предложить послушать, пока идут остальные
                 for c in {l["char"] for l in chunk}:
@@ -1328,13 +1391,17 @@ class DubJobs:
             self._finish(gid, "Озвучка готова — устанавливаем в игру")
 
     def _orig_stats(self, p: Project, line: dict) -> tuple[float, float]:
-        cache = p.get("orig_stats") or {}
+        caches = getattr(self, "_orig_stats_cache", None)
+        if caches is None:
+            caches = self._orig_stats_cache = {}
+        if p.id not in caches:
+            caches[p.id] = p.get("orig_stats") or {}
+        cache = caches[p.id]
         if line["id"] not in cache:
             w, sr = audio.read(p.dir / line["orig"])
             cache[line["id"]] = list(audio.f0_stats(w, sr))
             if len(cache) % 25 == 0:
                 p.set("orig_stats", cache)
-            self._orig_stats_cache = cache
         return tuple(cache[line["id"]])
 
     def _do_judge(self, gid: str, ids: list[str] | None = None, quick: bool = False, autofix: bool = True, rounds: int = 2):
@@ -1363,25 +1430,37 @@ class DubJobs:
             chunk = lines[i:i + 8]
             report(f"Контролёр: проверка {i}/{len(lines)}", i, len(lines))
             files = [str(p.dir / l["gen"]) for l in chunk]
-            heard = asr.transcribe(files, language="russian")
-            prons = pron.check(files, [l["ru"] for l in chunk]) if use_pron else [None] * len(files)
-            embs = judge.ecapa_embed(files) if use_ecapa else None
+            saved = [(l["info"] or {}).get("dry_check") or {} for l in chunk]
+            heard = [record.get("heard") for record in saved]
+            missing = [k for k, h in enumerate(heard) if h is None]
+            if missing:
+                for k, h in zip(missing, asr.transcribe([files[k] for k in missing], language="russian")):
+                    heard[k] = h
+            prons = [record.get("pron") for record in saved]
+            missing = [k for k, result in enumerate(prons) if result is None]
+            if use_pron and missing:
+                for k, result in zip(missing, pron.check([files[k] for k in missing], [chunk[k]["ru"] for k in missing])):
+                    prons[k] = result
+            missing = [k for k, l in enumerate(chunk) if (l["info"] or {}).get("consistency") is None]
+            embs = dict(zip(missing, judge.ecapa_embed([files[k] for k in missing]))) if use_ecapa and missing else {}
             for k, (l, h) in enumerate(zip(chunk, heard)):
                 try:
                     orig_emo, orig_ev = self._orig_judge(p, l) if not quick else (None, None)
                     cons, floor = None, None
                     stored = l["info"] or {}
-                    if stored.get("reference_policy") == 2 and stored.get("consistency") is not None:
+                    if stored.get("reference_policy") in (2, REFERENCE_POLICY) and stored.get("consistency") is not None:
                         cons, floor = stored["consistency"], stored["consistency_floor"]
-                    elif embs is not None:
+                    elif k in embs:
                         centroid, floor = self._ru_voice(p, l["char"])
                         cons = float(embs[k] @ centroid) if centroid is not None else None
-                    g, gsr = audio.read(p.dir / l["gen"])
+                    stats = saved[k].get("f0")
+                    if stats is None:
+                        stats = audio.f0_stats(*audio.read(p.dir / l["gen"]))
                     res = judge.judge_line(str(p.dir / l["gen"]), l["ru"], str(p.dir / l["orig"]),
                                            profiles.get(l["char"]), heard=h, orig_emotion=orig_emo, orig_events=orig_ev,
-                                           full=not quick, profile_f0=self.profile_f0(p, l["char"]),
+                                           full=not quick, profile_f0=saved[k].get("target_pitch") or self.profile_f0(p, l["char"]),
                                            consistency=cons, cons_floor=floor, pron=prons[k],
-                                           gen_stats=audio.f0_stats(g, gsr), orig_stats=self._orig_stats(p, l),
+                                           gen_stats=stats, orig_stats=self._orig_stats(p, l),
                                            events_kept=((l["info"] or {}).get("fit") or {}).get("kept"))
                     res["problems"] = judge._problems(res)
                 except Exception as e:
@@ -1389,7 +1468,9 @@ class DubJobs:
                 info = dict(l["info"] or {})
                 info["judge"] = res
                 p.update_line(l["id"], info=info)
-        p.set("orig_stats", getattr(self, "_orig_stats_cache", None) or p.get("orig_stats"))
+        stats_cache = getattr(self, "_orig_stats_cache", {}).get(p.id)
+        if stats_cache:
+            p.set("orig_stats", stats_cache)
         asr.unload()
         judge.unload()
         pron.unload()
@@ -1405,7 +1486,7 @@ class DubJobs:
                 l["info"] = info
                 p.update_line(l["id"], info=info)
                 if plan.get("director"):
-                    need_dir.append(l)
+                        need_dir.append(l)
             if need_dir and self._director_ready(gid):
                 report(f"Режиссёр: новая подача для {len(need_dir)} реплик…")
                 tr = self._translator_for(gid)
@@ -1742,7 +1823,7 @@ class DubJobs:
         return judge.VE_WEIGHTS.exists() and models.path("judge-emotion8") is not None
 
     def _render(self, gid: str, p: Project, char: str, lines: list[dict], out_dir: Path, seed: int | None = None,
-                plan: dict | None = None, timbre: bool = True, take: int = 0) -> tuple[list[str], float | None]:
+                plan: dict | None = None, timbre: bool = True, take: int = 0, dry: bool = False) -> tuple[list[str], float | None]:
         """Озвучить реплики персонажа в out_dir по его плану (timbre=False — тот же план без переноса тембра);
         зёрна — как у полной озвучки для прогона take (line_seed), если seed не задан явно.
         Вернуть файлы и среднюю похожесть на персонажа."""
@@ -1754,8 +1835,8 @@ class DubJobs:
         profile_emb = judge.speaker_embed([prof_long["audio"]]) if prof_long and judge.VE_WEIGHTS.exists() else None
         src = plan["source"]
         outs = []
+        ref = self.line_ref(p, lines[0], plan) if lines else None
         for l in lines:  # по одной: у каждой реплики своя подача под эмоцию оригинала
-            ref = self.line_ref(p, l, plan)
             params = {"speaker": ref.get("speaker"), **self._style_params(p, l, src)}
             deliv = (l["info"] or {}).get("delivery") or {}
             text = deliv.get("text") if deliv.get("text") and director_same(deliv["text"], l["ru"]) else l["ru"]
@@ -1767,14 +1848,13 @@ class DubJobs:
         files, sims = [], []
         note = (p.get("char_notes") or {}).get(char)
         for l, (wav, sr) in zip(lines, outs):
-            wav, sr = self._apply_note(wav, sr, note)
-            if plan["timbre"]:
-                wav, sr = tts.convert_timbre(wav, sr, plan["rvc"], {"pitch": plan["pitch"], "auto_pitch": False,
-                                                                     "index_rate": 0.0, "protect": 0.5})
-            orig, osr = audio.read(p.dir / l["orig"])
-            fitted, _ = self._fit_line(p, l, wav, sr, orig, osr, self.settings(gid)["max_speedup"])
+            wav, sr = self._apply_voice(p, l, plan, wav, sr, note)
+            if not dry:
+                orig, osr = audio.read(p.dir / l["orig"])
+                wav, _ = self._fit_line(p, l, wav, sr, orig, osr, self.settings(gid)["max_speedup"])
+                sr = osr
             f = out_dir / Path(l["orig"]).name
-            audio.write(f, fitted, osr)
+            audio.write(f, wav, sr)
             files.append(str(f.relative_to(p.dir)))
             if profile_emb is not None:
                 sims.append(judge.voice_similarity(str(f), profile_emb))
@@ -1874,26 +1954,19 @@ class DubJobs:
             if self._checkpoint():
                 return
             report(f"Пробы голосов: {c['name']} ({i}/{len(chars)})", i - 1, len(chars))
-            cands = [l for l in p.lines(char=c["id"]) if l["ru"] and 2.0 <= (l["duration"] or 0) <= 8
-                     and l["status"] != "skipped"]
-            seen = {l["ru"].casefold().strip() for l in cands}
-            if len(seen) < SAMPLE_LINES:
-                cands += [l for l in p.lines(char=c["id"]) if l["ru"] and l["status"] != "skipped"
-                          and (l["duration"] or 0) <= 12
-                          and l["ru"].casefold().strip() not in seen]
-            cands = list({l["ru"].casefold().strip(): l for l in reversed(cands)}.values())[::-1]
-            if not cands:
+            lines = self._sample_lines(p, c["id"])
+            if not lines:
                 continue
-            step = max(1, len(cands) // SAMPLE_LINES)
-            lines = cands[::step][:SAMPLE_LINES]
             try:
-                plan = self.voice_plan(p, c["id"])
+                plan = self._checked_voice_plan(gid, p, c["id"])
+                if self._checkpoint():
+                    return
                 files, sim = self._render(gid, p, c["id"], lines, p.dir / "samples" / _safe(c["id"]), plan=plan, take=take)
             except Exception as e:
                 result["chars"].append({"id": c["id"], "name": c["name"], "error": str(e)[:200], "items": []})
                 continue
             result["chars"].append({"id": c["id"], "name": c["name"], "similarity": sim, "trained": plan["timbre"],
-                                    "source": plan["source"], "reason": plan["reason"], "reference_policy": 2,
+                                    "source": plan["source"], "reason": plan["reason"], "reference_policy": REFERENCE_POLICY,
                                     "items": [{"id": l["id"], "ru": l["ru"], "en": l["en"], "file": f}
                                               for l, f in zip(lines, files)]})
         if only_char:  # сохранить порядок главных персонажей
@@ -1902,6 +1975,39 @@ class DubJobs:
         p.set("samples", result)
         if not only_char:
             self._finish(gid, "Пробы готовы — послушайте")
+
+    @staticmethod
+    def _sample_lines(p: Project, char: str) -> list[dict]:
+        available = [l for l in p.lines(char=char) if l["ru"] and l["status"] != "skipped"
+                     and 0 < (l["duration"] or 0) <= 12]
+        preferred = [l for l in available if 2.0 <= l["duration"] <= 8]
+        distinct = {}
+        for line in preferred:
+            distinct.setdefault(line["ru"].casefold().strip(), line)
+        for line in available if len(distinct) < SAMPLE_LINES else []:
+            distinct.setdefault(line["ru"].casefold().strip(), line)
+        candidates = list(distinct.values())
+        return candidates[::max(1, len(candidates) // SAMPLE_LINES)][:SAMPLE_LINES]
+
+    def _checked_voice_plan(self, gid: str, p: Project, char: str) -> dict:
+        from . import donors, timbre
+        plan = self.voice_plan(p, char)
+        if plan["source"] != "ru" or not plan["donor"]:
+            return plan
+        current = (p.get("donors") or {}).get(char, {})
+        if not current.get("audition") and not current.get("manual"):
+            lines = self._sample_lines(p, char)
+            donors.audition(self, p, char, lines)
+        updated = self.voice_plan(p, char)
+        voice = timbre.entry(p, char)
+        validation = (voice or {}).get("val") or {}
+        if (updated["tier"] == "main" and voice and voice.get("pth") and (p.dir / voice["pth"]).is_file()
+                and voice.get("holdout") and (not validation.get("dry") or validation.get("donor") != updated["donor"]["id"])
+                and not self.cancel_flag.is_set()):
+            holdout = [l for l in p.lines(ids=voice["holdout"]) if l["ru"]]
+            timbre.calibrate(self, gid, char, holdout)
+            updated = self.voice_plan(p, char)
+        return updated
 
     def _do_train_voice(self, gid: str, char: str, **_):
         """Обучить модель тембра персонажа (RVC) на его записях — timbre.train; контроль — после озвучки проб."""
@@ -1974,6 +2080,13 @@ class DubJobs:
         p = self.project(gid)
         if not p.count(status="approved"):
             raise RuntimeError("Нет одобренных реплик — сначала прослушайте и одобрите их")
+        voice_keys = {}
+        for line in p.lines(status="approved"):
+            char = line["char"]
+            key = (line["info"] or {}).get("voice_key")
+            if char in voice_keys and voice_keys[char] != key:
+                raise RuntimeError(f"У персонажа «{char}» одобрены разные версии голоса. Переозвучьте его целиком.")
+            voice_keys[char] = key
         n = self._adapter(gid).install(p, self._game(gid), self._progress(gid))
         p.set("installed_at", time.time())
         p.set("installed_count", n)

@@ -172,8 +172,6 @@ label.field select, label.field input[type=range] { width: 100%; max-width: 520p
 .note-input { width: 100%; font-size: 12px; opacity: .85; }
 .callout.speakers td { vertical-align: top; }
 
-.train-levels { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
-.train-levels .radio { margin: 4px 0; }
 
 /* голоса персонажей */
 table.voices select { padding: 4px 6px; font-size: 12px; max-width: 220px; }
