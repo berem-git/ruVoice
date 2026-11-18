@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from ruvoice import audio, dub, timbre
+from ruvoice import audio, dub, pron, timbre
 from ruvoice.dub import DubJobs
 from ruvoice.project import Project
 
@@ -80,6 +80,14 @@ class SettingsTests(ProjectCase):
         self.assertEqual(s["timbre_level"], "deep")
         self.assertNotIn("ft_level", s)
         self.assertNotIn("ft_level", self.p.get("settings"))
+
+    def test_dry_pronunciation_rejects_reference_text_at_edges(self):
+        text = "Соберись, Клэр. Соберись."
+        heard = "И никто не торопился. Соберись, Клэр. Соберись."
+        self.assertEqual(pron.compare(text, heard)["cer"], 0)
+        result = pron.compare(text, heard, mixed=False)
+        self.assertGreater(result["cer"], 0.8)
+        self.assertEqual(result["words"], [("—", "и никто не торопился")])
 
 
 class SpeechSecondsTests(ProjectCase):

@@ -1297,7 +1297,7 @@ class DubJobs:
                     tmps.append(tmp)
                 judging = use_judge and (len(scored) > 1 or inline_asr)
                 heard_all = asr.transcribe(raw, language="russian") if judging and inline_asr else [None] * len(tmps)
-                prons = pron.check(raw, [l["ru"]] * len(raw)) if judging and use_pron else [None] * len(raw)
+                prons = pron.check(raw, [l["ru"]] * len(raw), mixed=False) if judging and use_pron else [None] * len(raw)
                 centroid, floor = self._ru_voice(p, l["char"], plan["timbre"], reference=ref) if use_ecapa else (None, None)
                 embs = judge.ecapa_embed(raw) if use_ecapa and centroid is not None else None
                 cons = [float(e @ centroid) for e in embs] if embs is not None else [None] * len(raw)
@@ -1325,7 +1325,7 @@ class DubJobs:
                              - (60 * prons[k]["cer"] if prons[k] else 0))
                     if cons[k] is not None and floor is not None and cons[k] < floor:
                         score -= 1000  # хороший текст не перевешивает чужой голос
-                    if jr and {"accent", "pitch"}.intersection(jr.get("codes", [])):
+                    if jr and {"accent", "pitch", "words"}.intersection(jr.get("codes", [])):
                         score -= 1000
                     if best is None or score > best_score:
                         best, best_info, best_judge, best_k, best_score = fitted, finfo, jr or {"score": 0}, k, score

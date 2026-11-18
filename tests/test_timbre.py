@@ -111,7 +111,7 @@ class CalibrateTests(TimbreCase):
         (self.p.dir / "voices" / "hero" / "rvc" / "model.pth").write_bytes(b"pth")
         self.more = [
             patch("ruvoice.pron.ready", return_value=True),
-            patch("ruvoice.pron.check", side_effect=lambda items, texts: [{"cer": self.pron[Path(str(items[0])).parent.name],
+            patch("ruvoice.pron.check", side_effect=lambda items, texts, **kwargs: [{"cer": self.pron[Path(str(items[0])).parent.name],
                                                                            "heard": "", "words": []} for _ in items]),
             patch("ruvoice.pron.unload"), patch("ruvoice.asr.unload"), patch("ruvoice.judge.unload"), patch("ruvoice.tts.unload"),
             patch("ruvoice.judge.ecapa_ready", return_value=True),

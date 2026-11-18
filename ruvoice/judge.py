@@ -397,6 +397,7 @@ def judge_line(gen_path: str, ru_text: str, orig_path: str, profile: np.ndarray 
         if c > 0.35:
             reasons.append(f"текст искажён: распознано «{heard[:60]}»")
             score -= 45
+            problems.append("words")
         elif c > 0.15:
             reasons.append("часть слов произнесена неразборчиво")
             score -= 20
@@ -454,7 +455,7 @@ def judge_line(gen_path: str, ru_text: str, orig_path: str, profile: np.ndarray 
 
     result["codes"] = problems
     result["score"] = int(max(0, min(100, score)))
-    result["verdict"] = "ok" if result["score"] >= 70 and not {"drift", "accent", "pitch"}.intersection(problems) else "rework"
+    result["verdict"] = "ok" if result["score"] >= 70 and not {"drift", "accent", "pitch", "words"}.intersection(problems) else "rework"
     result["reasons"] = reasons
     result["problems"] = _problems(result)
     return result
@@ -480,7 +481,7 @@ ACTIONS = {
 
 def _problems(r: dict) -> list[dict]:
     out = [{"code": c, "action": ACTIONS[c]} for c in (r.get("codes") or r.pop("_extra_problems", [])) if c in ACTIONS]
-    if r.get("cer") is not None and r["cer"] > 0.15:
+    if "words" not in (r.get("codes") or []) and r.get("cer") is not None and r["cer"] > 0.15:
         out.append({"code": "words", "action": ACTIONS["words"]})
     if r.get("ratio") is not None and r["ratio"] > 1.35:
         out.append({"code": "fast", "action": ACTIONS["fast"]})

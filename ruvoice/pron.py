@@ -69,16 +69,17 @@ def _lev(a: str, b: str) -> int:
     return d[len(b)]
 
 
-def compare(text: str, heard: str) -> dict:
+def compare(text: str, heard: str, *, mixed: bool = True) -> dict:
     """Сравнить заданный текст с услышанным: доля ошибок по буквам (без пробелов — «первое сточника» и
     «первоисточника» не ошибка) и список слов, прозвучавших не так: [(как надо, как слышно)]."""
     want, got = _words(text), _words(heard)
     sm = difflib.SequenceMatcher(None, want, got, autojunk=False)
     ops = sm.get_opcodes()
-    # вставки по краям — смех, вдох, междометия из оригинала: не ошибка
-    while ops and ops[0][0] == "insert":
+    # В смешанной дорожке на краях может быть звук оригинала. У чистого синтеза
+    # лишние слова обычно означают, что движок прочитал кусок текста образца.
+    while mixed and ops and ops[0][0] == "insert":
         ops = ops[1:]
-    while ops and ops[-1][0] == "insert":
+    while mixed and ops and ops[-1][0] == "insert":
         ops = ops[:-1]
     core = []
     if ops:
@@ -98,7 +99,7 @@ def compare(text: str, heard: str) -> dict:
     return {"cer": round(c, 3), "heard": " ".join(got), "words": bad[:6]}
 
 
-def check(items: list, texts: list[str]) -> list[dict]:
+def check(items: list, texts: list[str], *, mixed: bool = True) -> list[dict]:
     """items — пути или (wav, sr); для каждой записи — compare() с текстом."""
     import torch
     out = []
@@ -113,7 +114,7 @@ def check(items: list, texts: list[str]) -> list[dict]:
             inp = proc(w, sampling_rate=16000, return_tensors="pt").input_values.to(model.device, model.dtype)
             with torch.no_grad():
                 ids = model(inp).logits.argmax(-1)
-            out.append(compare(text, proc.batch_decode(ids)[0]))
+            out.append(compare(text, proc.batch_decode(ids)[0], mixed=mixed))
     return out
 
 

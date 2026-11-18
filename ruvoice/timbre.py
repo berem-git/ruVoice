@@ -274,7 +274,7 @@ def calibrate(jobs, gid: str, char: str, holdout: list[dict]) -> dict:
         res[f"sim_{tag}"] = None if sim is None else round(float(sim), 3)
     if pron.ready():
         for tag in ("base", "rvc"):
-            checks = pron.check([str(p.dir / f) for f in files[tag]], [l["ru"] for l in holdout])
+            checks = pron.check([str(p.dir / f) for f in files[tag]], [l["ru"] for l in holdout], mixed=False)
             res[f"pron_{tag}"] = round(float(np.mean([c["cer"] for c in checks])), 3)
         pron.unload()
     f0s = [v for v in (audio.f0_median(*audio.read(p.dir / f)) for f in files["rvc"]) if v]

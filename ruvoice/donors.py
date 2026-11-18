@@ -161,7 +161,7 @@ def audition(jobs, p, char: str, lines: list[dict]):
     from . import audio, judge, pron, tts
 
     current = assigned(jobs, p, char)
-    if current.get("manual") or current.get("audition") == 1 or len(lines) < 2:
+    if current.get("manual") or current.get("audition") or len(lines) < 2:
         return
     if not pron.ready() or not judge.ecapa_ready():
         return
@@ -182,7 +182,7 @@ def audition(jobs, p, char: str, lines: list[dict]):
         recordings = tts.synthesize("ru", texts, [ref] * len(texts), limits,
                                     {"temperature": .68, "subtalker_dosample": False}, seed=902)
         embeddings = judge.ecapa_embed([ref["audio"], *recordings])
-        cer = [result["cer"] for result in pron.check(recordings, texts)]
+        cer = [result["cer"] for result in pron.check(recordings, texts, mixed=False)]
         f0s = [v for v in (audio.f0_median(*w) for w in recordings) if v]
         pitches = [_semitones(target, v) for v in f0s]
         pairs = [float(a @ b) for i, a in enumerate(embeddings[1:]) for b in embeddings[i + 2:]]
